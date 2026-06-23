@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+venv/
+
+# Models (large binary files)
+models/
+
+# Tools - binaries & wheels
+tools/ffmpeg/
+tools/piper/
+tools/*.whl
+
+# TTS output
+core/tts_output/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Misc
+improvements.txt
+.env
+*.db
+.cache/
+memory/*.db
+memory/.chroma/
+memory/store/
