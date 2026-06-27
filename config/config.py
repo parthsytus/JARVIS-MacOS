@@ -36,7 +36,7 @@ MODELS_DIR = os.path.join(JARVIS_ROOT, "models")  # Where model weights save
 # ------------------------------------------------------------
 # OLLAMA SETTINGS
 # ------------------------------------------------------------
-OLLAMA_MODEL = "llama3.2"     # Change this one line to swap the brain
+OLLAMA_MODEL = "gemma4:12b"     # Change this one line to swap the brain
 OLLAMA_URL = "http://localhost:11434/api/chat"
 
 # ------------------------------------------------------------
@@ -51,28 +51,16 @@ CHUNK_SIZE = 1024              # Audio buffer size in frames
 # ------------------------------------------------------------
 JARVIS_NAME = "Jarvis"
 USER_NAME = "Parth"
+SHOW_THINKING = True
 
 # ----------------------------------------------------------
-# PIPER TTS SETTINGS
+# KOKORO TTS SETTINGS
 # ----------------------------------------------------------
-PIPER_EXE = os.path.join(JARVIS_ROOT, "tools", "piper", "piper")
-PIPER_MODELS_DIR = os.path.join(JARVIS_ROOT, "models", "piper")
+KOKORO_VOICE = "bm_george"
+KOKORO_SAMPLE_RATE = 24000
+KOKORO_PLAYBACK_SAMPLE_RATE = 24000
 
-# Active voice — change this one line to swap JARVIS's voice
-PIPER_VOICE = "en_US-ryan-high"
-PIPER_VOICE_HINDI = "hi_IN-rohan-medium"
 
-# Full paths — auto-constructed from voice name, never hardcoded
-PIPER_MODEL = os.path.join(PIPER_MODELS_DIR, f"{PIPER_VOICE}.onnx")
-PIPER_CONFIG = os.path.join(PIPER_MODELS_DIR, f"{PIPER_VOICE}.onnx.json")
-
-PIPER_MODEL_HINDI = os.path.join(PIPER_MODELS_DIR, f"{PIPER_VOICE_HINDI}.onnx")
-PIPER_CONFIG_HINDI = os.path.join(PIPER_MODELS_DIR, f"{PIPER_VOICE_HINDI}.onnx.json")
-
-# Audio output settings for Piper
-PIPER_SAMPLE_RATE = 22050        # Ryan-high outputs at 22050Hz
-PIPER_SAMPLE_RATE_HINDI = 22050  # Rohan outputs at 22050Hz
-PIPER_OUTPUT_DIR = os.path.join(JARVIS_ROOT, "core", "tts_output")
 
 # ----------------------------------------------------------
 # WEATHER SETTINGS
@@ -101,8 +89,5 @@ MEMORY_MID_SESSION_INTERVAL = 20  # Consolidate every N turns during long sessio
 # WAKE WORDS
 # ----------------------------------------------------------
 WAKE_WORDS = [
-    "jarvis", "hey jarvis", "hi jarvis", "hello jarvis", "jarvis yes", "yes jarvis",
-    "जार्विस", "हे जार्विस", "हाय जार्विस", "हेलो जार्विस", "नमस्ते जार्विस",
-    "जारविस", "हे जारविस", "हाय जारविस", "हेलो जारविस", "नमस्ते जारविस",
-    "जारvis", "hey जारvis", "hi जारvis", "hello जारvis", "हे जारvis", "हाय जारvis", "हेलो जारvis"
+    "jarvis", "hey jarvis", "hi jarvis", "hello jarvis", "jarvis yes", "yes jarvis"
 ]

@@ -31,7 +31,9 @@ Thumbs.db
 improvements.txt
 .env
 *.db
-.cache/
+.cache
 memory/*.db
 memory/.chroma/
 memory/store/
+.venv/
+tests/output/

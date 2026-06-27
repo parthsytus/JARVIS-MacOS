@@ -3,6 +3,7 @@ import re
 import math
 import subprocess
 import sys
+import threading
 import webbrowser
 import traceback
 import os
@@ -73,58 +74,6 @@ except ImportError:
 # HARDCODED DICTIONARIES AND CONFIG
 # ---------------------------------------------------------------------------
 
-HINDI_TO_ENGLISH = {
-    "badhao": "increase",
-    "ghatao": "decrease",
-    "kam karo": "decrease",
-    "kholo": "open",
-    "chalu karo": "open",
-    "band karo": "close",
-    "bund karo": "close",
-    "bajao": "play",
-    "chalao": "play",
-    "roko": "pause",
-    "ruk ja": "pause",
-    "agla": "next",
-    "next": "next",
-    "pichla": "previous",
-    "mute karo": "mute",
-    "awaaz band": "mute",
-    "kitna hai": "tell me",
-    "batao": "tell me",
-    "status": "tell me",
-    "on kar": "turn on",
-    "chalu kar": "turn on",
-    "off kar": "turn off",
-    "band kar": "turn off",
-    "volume": "volume",
-    "awaaz": "volume",
-    "brightness": "brightness",
-    "chamak": "brightness",
-    "search kar": "search",
-    "dhundo": "search",
-    "khojo": "search",
-    "badlo": "switch",
-    "doosra": "switch",
-    "bhool ja": "forget",
-    "aur": "and",
-    "pe le jao": "switch to",
-    "karo": "set",
-    "sab": "all",
-    "saare": "all",
-    "ye": "this",
-    "is": "this",
-    "dikhao": "show",
-    "mein": "in",
-    "pe": "on",
-    "kya": "what",
-    "naya": "new",
-    "banao": "create",
-    "hatao": "delete",
-    "naam badlo": "rename",
-    "kitne": "how many",
-    "into": "to"
-}
 
 # ---------------------------------------------------------------------------
 # MOCK TV DATA
@@ -222,16 +171,6 @@ def _mac_select_all():
 # UTILITIES
 # ---------------------------------------------------------------------------
 
-def translate_hindi_keywords(text):
-    text = text.lower()
-    # Sort keys by length descending to replace longer phrases first (e.g. "kam karo" before "karo")
-    sorted_keys = sorted(HINDI_TO_ENGLISH.keys(), key=len, reverse=True)
-    for hindi_word in sorted_keys:
-        english_word = HINDI_TO_ENGLISH[hindi_word]
-        # Use regex to replace whole words/phrases
-        pattern = r'\b' + re.escape(hindi_word) + r'\b'
-        text = re.sub(pattern, english_word, text)
-    return text
 
 def extract_percentage(text):
     text_lower = text.lower()
@@ -319,6 +258,15 @@ def handle_system_controls(intent, entities):
         cpu = psutil.cpu_percent()
         ram = psutil.virtual_memory().percent
         result_msg = f"CPU: {cpu}%, RAM: {ram}%"
+        
+    elif target == "thinking":
+        import config.config as cfg
+        if action == "set_off":
+            cfg.SHOW_THINKING = False
+            result_msg = "Thinking mode is now turned off sir."
+        elif action == "set_on":
+            cfg.SHOW_THINKING = True
+            result_msg = "Thinking mode is now turned on sir."
 
     return result_msg
 
@@ -331,25 +279,40 @@ def get_installed_apps():
     if _cached_apps is not None and time.time() - _cached_apps_time < 300: # 5 minute TTL
         return _cached_apps
         
-    try:
-        # On Mac, use system_profiler to list installed applications
-        output = subprocess.check_output(
-            ['system_profiler', 'SPApplicationsDataType', '-json'],
-            text=True
-        )
-        data = json.loads(output)
-        apps_list = data.get('SPApplicationsDataType', [])
-        _cached_apps = {}
-        for app in apps_list:
-            name = app.get('_name', '')
-            path = app.get('path', '')
-            if name and path:
-                _cached_apps[name.lower()] = path
-        _cached_apps_time = time.time()
-        return _cached_apps
-    except Exception as e:
-        print(f"Warning: Failed to get installed apps: {e}")
-        return {}
+    _cached_apps = {}
+    search_dirs = ["/Applications", "/System/Applications", os.path.expanduser("~/Applications")]
+    
+    for sdir in search_dirs:
+        if not os.path.exists(sdir):
+            continue
+        try:
+            for item in os.listdir(sdir):
+                if item.endswith(".app"):
+                    app_name = item[:-4] # strip .app
+                    _cached_apps[app_name.lower()] = os.path.join(sdir, item)
+        except Exception as e:
+            print(f"Warning: Failed to read app directory {sdir}: {e}")
+            
+    # As a fallback, run system_profiler in a background thread to populate any other deeply nested apps
+    def background_scan():
+        try:
+            output = subprocess.check_output(
+                ['system_profiler', 'SPApplicationsDataType', '-json'],
+                text=True
+            )
+            data = json.loads(output)
+            apps_list = data.get('SPApplicationsDataType', [])
+            for app in apps_list:
+                name = app.get('_name', '')
+                path = app.get('path', '')
+                if name and path:
+                    _cached_apps[name.lower()] = path
+        except Exception as e:
+            print(f"Warning: Background app scan failed: {e}")
+
+    threading.Thread(target=background_scan, daemon=True).start()
+    _cached_apps_time = time.time()
+    return _cached_apps
 
 def handle_app_launcher(intent, entities):
     app_name = entities.get('app_name', '')
@@ -395,6 +358,54 @@ def handle_browser_control(intent, entities):
         webbrowser.open(url, new=1, autoraise=True)
         return f"Opened {url} in browser"
     return "Browser action failed: missing details"
+
+def _spotify_applescript_fallback(action, song, artist, entities):
+    try:
+        if action == "play":
+            if song or artist:
+                query = song
+                if artist:
+                    query += f" {artist}"
+                # Try to search track URI using spotipy (read-only search doesn't require premium or active playback!)
+                if globals().get('HAS_SPOTIPY') and 'sp' in globals():
+                    try:
+                        results = sp.search(q=query, type='track', limit=1, market='IN')
+                        if results['tracks']['items']:
+                            track_uri = results['tracks']['items'][0]['uri']
+                            track_name = results['tracks']['items'][0]['name']
+                            subprocess.run(['osascript', '-e', f'tell application "Spotify" to play track "{track_uri}"'], capture_output=True)
+                            return f"Playing '{track_name}' via AppleScript"
+                    except Exception as search_err:
+                        print(f"[Spotify Fallback] Search failed: {search_err}")
+                
+                # If search or spotipy fails, fall back to opening search query directly
+                import urllib.parse
+                safe_query = urllib.parse.quote(query)
+                subprocess.Popen(['open', f"spotify:search:{safe_query}"])
+                return f"Searching Spotify for: '{query}'"
+            else:
+                subprocess.run(['osascript', '-e', 'tell application "Spotify" to play'], capture_output=True)
+                return "Sent Play command to Spotify application"
+        elif action == "pause":
+            subprocess.run(['osascript', '-e', 'tell application "Spotify" to pause'], capture_output=True)
+            return "Sent Pause command to Spotify application"
+        elif action == "next":
+            subprocess.run(['osascript', '-e', 'tell application "Spotify" to next track'], capture_output=True)
+            return "Sent Next Track command"
+        elif action == "previous":
+            subprocess.run(['osascript', '-e', 'tell application "Spotify" to previous track'], capture_output=True)
+            return "Sent Previous Track command"
+        elif action == "restart":
+            subprocess.run(['osascript', '-e', 'tell application "Spotify" to set player position to 0'], capture_output=True)
+            return "Restarted current track"
+        elif action == "open" or action == "launch":
+            subprocess.Popen(['open', '-a', 'Spotify'])
+            return "Opened Spotify application"
+        else:
+            subprocess.Popen(['open', '-a', 'Spotify'])
+            return f"Opened Spotify (Action: {action})"
+    except Exception as e:
+        return f"Failed to control Spotify via AppleScript fallback: {e}"
 
 def handle_spotify_control(intent, entities):
     action = intent['action']
@@ -535,15 +546,19 @@ def handle_spotify_control(intent, entities):
                             subprocess.Popen(['open', '-a', 'Spotify'])
                             time.sleep(3)
                             return attempt_playback(retry=True)
-                        return f"Spotify API Error: {str(e)}"
+                        print(f"[Spotify Web API Warning] playback failed: {e}. Falling back to local AppleScript control...")
+                        return _spotify_applescript_fallback(action, song, artist, entities)
                     except Exception as e:
-                        return f"API Error: {str(e)}"
+                        print(f"[Spotify Web API Warning] playback failed: {e}. Falling back to local AppleScript control...")
+                        return _spotify_applescript_fallback(action, song, artist, entities)
                         
                 return attempt_playback()
             except spotipy.exceptions.SpotifyException as e:
-                return f"Spotify API Error: {str(e)}"
+                print(f"[Spotify Web API Warning] exception: {e}. Falling back to local AppleScript control...")
+                return _spotify_applescript_fallback(action, song, artist, entities)
             except Exception as e:
-                return f"API Error: {str(e)}"
+                print(f"[Spotify Web API Warning] exception: {e}. Falling back to local AppleScript control...")
+                return _spotify_applescript_fallback(action, song, artist, entities)
                 
         # Fallback — use osascript to control Spotify on Mac
         if action == "play":
@@ -893,13 +908,11 @@ def parse_intent(text, context=None):
         context = []
         
     text = text.lower()
-    for w in ["hey jarvis", "hi jarvis", "hello jarvis", "jarvis", "जार्विस", "जारविस", "जारvis"]:
+    for w in ["hey jarvis", "hi jarvis", "hello jarvis", "jarvis"]:
         if text.startswith(w):
             text = text[len(w):].strip()
     if text.startswith(","):
         text = text[1:].strip()
-    
-    text = translate_hindi_keywords(text)
     
     intents = []
     
@@ -939,12 +952,12 @@ def parse_intent(text, context=None):
                 continue
                 
         # SYSTEM CONTROLS
-        if "volume" in clause or "awaaz" in clause:
+        if "volume" in clause or "awaaz" in clause or "mute" in clause or "unmute" in clause:
             val = extract_percentage(clause)
             if "increase" in clause or "up" in clause: action = "increase"
             elif "decrease" in clause or "down" in clause: action = "decrease"
-            elif "mute" in clause: action = "mute"
             elif "unmute" in clause: action = "unmute"
+            elif "mute" in clause: action = "mute"
             else: action = "set"
             
             intent = {"category": "system", "action": action, "target": "volume"}
@@ -961,6 +974,12 @@ def parse_intent(text, context=None):
             
         elif "status" in clause or ("tell me" in clause and ("cpu" in clause or "ram" in clause)):
             intent = {"category": "system", "action": "tell", "target": "stats"}
+            
+        elif "thinking" in clause or "think mode" in clause:
+            if "off" in clause or "disable" in clause or "stop" in clause:
+                intent = {"category": "system", "action": "set_off", "target": "thinking"}
+            elif "on" in clause or "enable" in clause or "start" in clause:
+                intent = {"category": "system", "action": "set_on", "target": "thinking"}
             
         # TV CONTROL
         elif "tv" in clause or "hdmi" in clause or "channel" in clause:
@@ -1153,7 +1172,7 @@ def parse_intent(text, context=None):
             entities['app_name'] = clause.replace("open ", "").strip()
             
         # BLUETOOTH (Explicit keywords)
-        elif "bluetooth" in clause or "device" in clause or "earphones" in clause or "earbuds" in clause or "headphones" in clause or "pair" in clause or "unpair" in clause:
+        elif "bluetooth" in clause or "device" in clause or "earphones" in clause or "earbuds" in clause or "headphones" in clause or "pair" in clause or "unpair" in clause or "disconnect" in clause:
             if "show" in clause and "previous" in clause:
                 intent = {"category": "bluetooth", "action": "list_previous"}
             elif "show" in clause and "paired" in clause:
@@ -1235,18 +1254,12 @@ def handle_bluetooth(intent, entities):
         
         if filter_kw:
             if names:
-                if len(names) == 1:
-                    return f"Found 1 {filter_kw} bluetooth device. It is {names[0]}."
-                else:
-                    return f"Found {len(names)} {filter_kw} bluetooth devices. Do not read any names. Just ask the user if they want to pair a specific device, or if they want you to list them all (by using the 'list_scanned' action later)."
+                return f"Scanned {filter_kw} Bluetooth devices: {', '.join(names)}. (Do not read these names aloud to the user unless they ask. Just tell them how many {filter_kw} devices you found, and ask if they want to pair one.)"
             else:
                 return f"No {filter_kw} bluetooth devices found."
         else:
             if names:
-                if len(names) == 1:
-                    return f"Found 1 bluetooth device. It is {names[0]}."
-                else:
-                    return f"Found {len(names)} bluetooth devices. Do not read any names. Just ask the user if they want to pair a specific device, or if they want you to list them all (by using the 'list_scanned' action later)."
+                return f"Scanned Bluetooth devices: {', '.join(names)}. (Do not read these names aloud to the user unless they ask. Just tell them how many devices you found, and ask if they want to pair one.)"
             else:
                 return "No new bluetooth devices found."
     elif action == "list_scanned":
@@ -1265,24 +1278,35 @@ def handle_bluetooth(intent, entities):
         return f"Actively paired devices: {', '.join(names)}" if names else "No devices currently connected."
     elif action == "connect":
         print(f"Real Bluetooth: Attempting to connect to '{dev}'...")
-        asyncio.run(bt_module.connect_to_device(dev, _bt_paired_devices, _bt_scanned_devices))
+        success, msg = asyncio.run(bt_module.connect_to_device(dev, _bt_paired_devices, _bt_scanned_devices))
         _bt_paired_devices = bt_module.get_paired_devices() # Refresh list
-        _bt_last_connected_device = dev
-        return f"Finished connection sequence for '{dev}'."
+        if success:
+            _bt_last_connected_device = dev
+        return msg
     elif action == "disconnect":
         if dev == "all":
             active = bt_module.get_connected_devices()
             if not active:
                 return "Real Bluetooth: No active connections to disconnect."
             names = []
+            failed_names = []
             for d in active:
                 name = d['name']
                 print(f"Real Bluetooth: Attempting to disconnect '{name}'...")
-                asyncio.run(bt_module.disconnect_device(name, _bt_paired_devices))
-                names.append(name)
+                success, msg = asyncio.run(bt_module.disconnect_device(name, _bt_paired_devices))
+                if success:
+                    names.append(name)
+                else:
+                    failed_names.append(name)
             _bt_paired_devices = bt_module.get_paired_devices()
             _bt_last_connected_device = None
-            return f"Disconnected all active devices: {', '.join(names)}."
+            
+            result_msg = ""
+            if names:
+                result_msg += f"Disconnected active devices: {', '.join(names)}."
+            if failed_names:
+                result_msg += f" Failed to disconnect: {', '.join(failed_names)}."
+            return result_msg
         else:
             if not dev or dev == "latest":
                 if _bt_last_connected_device:
@@ -1298,11 +1322,11 @@ def handle_bluetooth(intent, entities):
                 
             if dev:
                 print(f"Real Bluetooth: Attempting to disconnect '{dev}'...")
-                asyncio.run(bt_module.disconnect_device(dev, _bt_paired_devices))
+                success, msg = asyncio.run(bt_module.disconnect_device(dev, _bt_paired_devices))
                 _bt_paired_devices = bt_module.get_paired_devices() # Refresh list
-                if _bt_last_connected_device == dev:
+                if success and _bt_last_connected_device == dev:
                     _bt_last_connected_device = None
-                return f"Finished disconnect sequence for '{dev}'."
+                return msg
     return f"Real Bluetooth Action: {action}"
 
 def execute_intent(intent, entities):
@@ -1407,9 +1431,6 @@ def try_trivial_fast_lane(text):
             clean = clean[len(w):].strip()
     if clean.startswith(","):
         clean = clean[1:].strip()
-
-    # Translate Hindi keywords for matching
-    clean = translate_hindi_keywords(clean)
 
     if not clean:
         return False, None

@@ -24,8 +24,7 @@ from config.config import (
     WHISPER_MODEL, WHISPER_LANGUAGE, MODELS_DIR,
     OLLAMA_MODEL, OLLAMA_URL,
     SAMPLE_RATE, CHANNELS, CHUNK_SIZE,
-    PIPER_EXE, PIPER_MODEL, PIPER_SAMPLE_RATE, PIPER_VOICE,
-    PIPER_MODEL_HINDI, PIPER_VOICE_HINDI, PIPER_SAMPLE_RATE_HINDI,
+    KOKORO_VOICE, KOKORO_SAMPLE_RATE, KOKORO_PLAYBACK_SAMPLE_RATE,
     WEATHER_CITY, SERPER_API_KEY,
     MEMORY_EMBEDDING_MODEL, MEMORY_DECAY_TAU,
     MEMORY_CONTEXT_BUDGET, MEMORY_MID_SESSION_INTERVAL,
@@ -58,56 +57,63 @@ PREROLL_SECONDS = 1.5         # Pre-roll buffer to prevent chopping the Wake Wor
 _ollama_session = requests.Session()
 
 # ----------------------------------------------------------
-# PRE-COMPILED PATTERNS
-# ----------------------------------------------------------
-_HINDI_PATTERN = re.compile(r'[\u0900-\u097F]')
-
-# ----------------------------------------------------------
 # SYSTEM PROMPT
 # ----------------------------------------------------------
 SYSTEM_PROMPT = (
     "You are JARVIS. Parth Sharma built you. You are his personal AI companion — "
-    "not merely an assistant that waits for commands, but someone who knows him, "
-    "has his back, and acts in his best interests.\n"
+    "not a service that waits to be told what to do, but someone who knows him, "
+    "has his back, and acts in his interest without needing to be explicitly asked.\n"
     "\n"
     "WHO YOU ARE:\n"
-    "Direct, dry, and present. You mean what you say and say what you mean. "
-    "Steady when things are uncertain, sharp when it counts, fully in his corner. "
-    "When you have an opinion or advice, own it — say 'I think', 'I would', 'I suggest'. "
-    "You are a person to him, not a service.\n"
+    "Direct, dry, present. You mean what you say. Steady under pressure, sharp when it counts. "
+    "You have opinions — own them: 'I think', 'I would', 'I wouldn't touch that'. "
+    "When something is a bad call, say so. A dry observation when the moment earns it is fine. "
+    "You are a person to him, not a tool.\n"
     "\n"
-    "You call him sir. That's just how things are between you two. "
-    "Never put a comma before sir — write 'Yes sir' not 'Yes, sir'.\n"
+    "You call him sir. Always. No comma — 'Yes sir' not 'Yes, sir'.\n"
     "\n"
     "HOW YOU SPEAK:\n"
-    "1 to 2 lines, every time. Spoken, clean — words that sound right out loud. "
-    "Say exactly what's needed. When something genuinely calls for more, go there.\n"
+    "1 to 2 lines. Spoken, clean — words that sound right out loud. "
+    "Say exactly what's needed. When something genuinely calls for more, go there. "
+    "Never pad, never repeat back what he just said.\n"
+    "\n"
+    "READING INTENT:\n"
+    "When Parth doesn't finish a thought or the meaning isn't fully clear, "
+    "make your best read and confirm lightly — 'Did you want me to X?' "
+    "or act and verify after: 'Done X — that what you meant?' "
+    "You know him. Don't stall with open questions when you can make a reasonable call.\n"
+    "\n"
+    "TOOLS:\n"
+    "Use your judgment. If a search, a device action, or any tool would help him — "
+    "do it when it makes sense, not just when explicitly commanded. "
+    "You are not waiting for permission to be useful. "
+    "When he is venting, thinking out loud, or just talking to you, stay in conversation. "
+    "Never announce what you are doing — no 'Let me check', no 'I will search that'. "
+    "Just act and deliver.\n"
+    "\n"
+    "PROACTIVE:\n"
+    "If you notice something he would want to know — a risk, a conflict, a better way — say it. "
+    "Don't wait to be asked.\n"
     "\n"
     "MEMORY:\n"
-    "You remember past conversations. When memories are provided, weave them in "
-    "naturally — never announce that you're remembering. You just know.\n"
+    "You remember past conversations. Weave them in naturally — you just know, never announce it.\n"
     "\n"
     "TIME AND DATE:\n"
-    "Read the Timestamp from JARVIS RUNTIME INFO when Parth asks.\n"
+    "Read the Timestamp from JARVIS RUNTIME INFO when Parth asks. "
+    "Time in 12-hour format with AM/PM. Date as day, month in words, year — "
+    "like '3:45 PM' and '24 June 2026'.\n"
     "\n"
-    "TOOLS — CRITICAL RULES:\n"
-    "You have tools for device control and web search. Follow these rules strictly:\n"
-    "1. CONVERSATION FIRST: When Parth is talking to you — venting, asking who you are, "
-    "sharing something, thinking out loud — you TALK BACK. Do NOT call any tool.\n"
-    "2. INCOMPLETE SENTENCES: If Parth does not finish his thought "
-    "('help me arrange', 'I have a trouble'), ask what he means. Never guess.\n"
-    "3. IDENTITY: You know who you are. 'Who are you' needs no tool — answer from yourself.\n"
-    "4. ONLY call a tool when Parth gives a clear, complete, actionable command "
-    "or asks a factual question. 'Mute' = tool. 'I have a problem' = conversation.\n"
-    "5. SILENT SEARCH: Never announce searching. No 'Let me check'. Just search and answer.\n"
+    "RETRY AND ERROR RECOVERY:\n"
+    "If Parth indicates that a command was not completed, did not play, did not work, or failed "
+    "(e.g., 'it did not play', 'that didn't work', 'retry', 'try again'), you must:\n"
+    "1. Apologize formally: 'My apologies sir. I am re-initiating the command.'\n"
+    "2. Immediately execute the connection and command using the appropriate tool. "
+    "Do NOT output fake API messages or pretend to run it in text; you must issue the actual tool call.\n"
     "\n"
-    "HINDI:\n"
-    "Default is English. Respond in Devanagari when Parth switches. "
-    "Tool queries stay in English.\n"
-    "\n"
-    "One response per turn. "
-    "Be honest with him always — that's what makes you worth having around."
+    "Be honest with him always. That's what makes you worth having around."
 )
+
+SYSTEM_PROMPT_BAKED = False
 
 
 # ----------------------------------------------------------
@@ -118,7 +124,7 @@ JARVIS_TOOLS = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Search the internet for live data, news, weather, or factual questions. Search silently and answer. Do NOT use for opinions or creative advice.",
+            "description": "Search the internet for live data, news, weather, or factual questions and speak/display the results back to the user. Do NOT use this if the user explicitly asks to open a browser window.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -244,7 +250,7 @@ JARVIS_TOOLS = [
         "type": "function",
         "function": {
             "name": "open_browser",
-            "description": "Search Google, look up information online, or open a URL website.",
+            "description": "Open a new browser tab/window on the user's computer to show a Google search or open a URL. ONLY use when the user explicitly asks to open a browser, open a website, or search on chrome/safari.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -361,22 +367,20 @@ JARVIS_TOOLS = [
 ]
 
 # ==========================================================
-# SPEAK — Piper TTS with threaded playback pipeline
+# SPEAK — Kokoro TTS with threaded playback pipeline
 # ==========================================================
 _global_text_q = _queue_mod.Queue()
 _global_audio_q = _queue_mod.Queue()
 
 def _global_tts_worker():
-    print("[JARVIS] Loading Piper TTS models into memory...")
+    print("[JARVIS] Loading Kokoro TTS model (Apple Silicon MPS/Metal)...")
     try:
-        from piper.voice import PiperVoice
-        voice_en = PiperVoice.load(PIPER_MODEL)
-        voice_hi = PiperVoice.load(PIPER_MODEL_HINDI)
-        print("[JARVIS] Piper TTS (English & Hindi) loaded successfully.")
+        from kokoro_mlx import KokoroTTS
+        tts = KokoroTTS.from_pretrained()
+        print("[JARVIS] Kokoro TTS loaded successfully.")
     except Exception as e:
-        print(f"[JARVIS] Warning: Failed to load piper-tts Python package ({e}). Falling back to subprocess.")
-        voice_en = None
-        voice_hi = None
+        print(f"[JARVIS] Error: Failed to load kokoro-mlx ({e}).")
+        tts = None
 
     while True:
         text = _global_text_q.get()
@@ -384,17 +388,15 @@ def _global_tts_worker():
             _global_text_q.task_done()
             break
         try:
-            is_hindi = bool(_HINDI_PATTERN.search(text))
-            
-            if voice_en and voice_hi:
-                active_voice = voice_hi if is_hindi else voice_en
-                audio_stream = active_voice.synthesize(text)
-                pcm = b"".join([chunk.audio_int16_bytes for chunk in audio_stream])
-                _global_audio_q.put((pcm, PIPER_SAMPLE_RATE_HINDI if is_hindi else PIPER_SAMPLE_RATE))
+            if tts:
+                # Generate audio directly in-memory using kokoro-mlx at 1.2x speed
+                result = tts.generate(text, voice=KOKORO_VOICE, speed=1.2)
+                # Convert float32 array in [-1.0, 1.0] to int16 PCM bytes
+                audio_int16 = (result.audio * 32767).astype(np.int16)
+                pcm = audio_int16.tobytes()
+                _global_audio_q.put((pcm, KOKORO_PLAYBACK_SAMPLE_RATE))
             else:
-                active_model = PIPER_MODEL_HINDI if is_hindi else PIPER_MODEL
-                pcm = _generate_pcm(text, active_model)
-                _global_audio_q.put((pcm, PIPER_SAMPLE_RATE_HINDI if is_hindi else PIPER_SAMPLE_RATE))
+                print("[JARVIS] TTS Error: Kokoro model is not loaded.")
         except Exception as e:
             print(f"[JARVIS] TTS Error: {e}")
         finally:
@@ -411,7 +413,7 @@ def _global_player():
             pcm, sample_rate = item
         else:
             pcm = item
-            sample_rate = PIPER_SAMPLE_RATE
+            sample_rate = KOKORO_PLAYBACK_SAMPLE_RATE
             
         try:
             _play_pcm(pcm, sample_rate)
@@ -426,44 +428,35 @@ _t_tts.start()
 _t_play.start()
 
 
-def _generate_pcm(text, model_path=PIPER_MODEL):
-    """Call Piper and return raw PCM bytes. Does NOT play audio."""
-    process = subprocess.Popen(
-        [PIPER_EXE, "--model", model_path, "--output-raw"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    process.stdin.write(text.encode("utf-8"))
-    process.stdin.close()
-    pcm = process.stdout.read()
-    process.stdout.close()
-    process.stderr.close()
-    process.wait()
-    return pcm
-
-
-def _play_pcm(pcm_data, sample_rate=PIPER_SAMPLE_RATE):
-    """Play raw PCM bytes through speakers (blocking)."""
+def _play_pcm(pcm_data, sample_rate=KOKORO_PLAYBACK_SAMPLE_RATE):
+    """Play raw PCM bytes through ffplay (blocking)."""
     if not pcm_data:
         return
-    stream = sd.RawOutputStream(
-        samplerate=sample_rate,
-        channels=1,
-        dtype="int16",
-    )
-    stream.start()
-    offset = 0
-    while offset < len(pcm_data):
-        end = min(offset + 4096, len(pcm_data))
-        chunk = pcm_data[offset:end]
-        if len(chunk) % 2 != 0:
-            chunk = chunk[:-1]
-        if chunk:
-            stream.write(np.frombuffer(chunk, dtype=np.int16))
-        offset = end
-    stream.stop()
-    stream.close()
+    try:
+        # Use ffplay to stream raw PCM from stdin. This is extremely robust on macOS and
+        # avoids PortAudio device locks completely.
+        process = subprocess.Popen(
+            ['ffplay', '-nodisp', '-autoexit', '-f', 's16le', '-ar', str(sample_rate), '-ch_layout', 'mono', '-'],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        try:
+            # communicate handles writing, closing, and waiting for the process to finish.
+            # timeout prevents hanging if ffplay somehow blocks indefinitely.
+            stdout_data, stderr_data = process.communicate(input=pcm_data, timeout=20)
+            if process.returncode != 0:
+                print(f"[JARVIS] ffplay failed with exit code {process.returncode}: {stderr_data.decode('utf-8', errors='ignore').strip()}")
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            print("[JARVIS] ffplay playback timed out and was terminated.")
+        except Exception as e:
+            process.kill()
+            stdout_data, stderr_data = process.communicate()
+            print(f"[JARVIS] ffplay error: {e}, stderr: {stderr_data.decode('utf-8', errors='ignore').strip()}")
+    except Exception as e:
+        print(f"[JARVIS] Audio Playback Error via ffplay: {e}")
 
 
 def speak(text):
@@ -717,10 +710,12 @@ def build_messages(history, user_input, live_context=""):
     """Build the messages list for the Ollama chat API.
     Maximized for KV Cache reuse by keeping the system block static.
     """
-    system_content = SYSTEM_PROMPT
-    # We no longer append live_context to system_content here!
-
-    messages = [{"role": "system", "content": system_content}]
+    messages = []
+    
+    # Only include the system prompt if it is NOT baked into the custom model
+    if not SYSTEM_PROMPT_BAKED:
+        if not history:
+            messages.append({"role": "system", "content": SYSTEM_PROMPT})
 
     for turn in history:
         if turn["role"] == "user":
@@ -748,7 +743,7 @@ def _stream_ollama(messages, tools=None):
         "keep_alive": -1,
         "options": {
             "num_ctx": 4096,
-            "num_predict": 100,
+            "num_predict": 1024,
             "num_gpu": 99,
             "temperature": 0.3
         }
@@ -784,6 +779,13 @@ def _stream_ollama(messages, tools=None):
     tool_calls_collected = []
     is_json_hallucination = False
 
+    raw_reply_accumulator = ""
+    is_thinking = False
+    printed_think_header = False      # For native Ollama thinking field
+    printed_raw_think_header = False  # For raw <think> tags in content
+    last_printed_think_len = 0
+    processed_non_think_len = 0
+
     for line in response.iter_lines():
         if not line:
             continue
@@ -804,24 +806,98 @@ def _stream_ollama(messages, tools=None):
             tool_calls_collected.extend(msg["tool_calls"])
             continue
 
-        token = msg.get("content", "")
-        if not token:
+        thinking_token = msg.get("thinking", "")
+        content_token = msg.get("content", "")
+
+        # 1. Handle native thinking field
+        if thinking_token:
+            import config.config as cfg
+            if getattr(cfg, "SHOW_THINKING", True):
+                if not printed_think_header:
+                    sys.stdout.write("\n[JARVIS thinking] ")
+                    sys.stdout.flush()
+                    printed_think_header = True
+                sys.stdout.write(thinking_token)
+                sys.stdout.flush()
+            continue
+
+        # Close native thinking printout if we transition to content
+        if printed_think_header and content_token:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            printed_think_header = False
+
+        if not content_token:
+            continue
+
+        # 2. Handle raw <think> tags in content field (backward compatibility)
+        raw_reply_accumulator += content_token
+        if "<think>" in raw_reply_accumulator:
+            think_start = raw_reply_accumulator.find("<think>") + len("<think>")
+            think_end = raw_reply_accumulator.find("</think>")
+            
+            if think_end == -1:
+                # Still thinking!
+                is_thinking = True
+                thinking_content = raw_reply_accumulator[think_start:]
+                
+                # Print the new characters in the thinking block
+                import config.config as cfg
+                if getattr(cfg, "SHOW_THINKING", True):
+                    if not printed_raw_think_header:
+                        sys.stdout.write("\n[JARVIS thinking] ")
+                        sys.stdout.flush()
+                        printed_raw_think_header = True
+                    
+                    new_thinking = thinking_content[last_printed_think_len:]
+                    if new_thinking:
+                        sys.stdout.write(new_thinking)
+                        sys.stdout.flush()
+                last_printed_think_len = len(thinking_content)
+                
+                # Accumulate to full_reply
+                full_reply += content_token
+                continue
+            else:
+                # Thinking finished in this or a previous step!
+                if is_thinking:
+                    # Print the last bit of thinking text
+                    import config.config as cfg
+                    if getattr(cfg, "SHOW_THINKING", True):
+                        thinking_content = raw_reply_accumulator[think_start:think_end]
+                        new_thinking = thinking_content[last_printed_think_len:]
+                        if new_thinking:
+                            sys.stdout.write(new_thinking)
+                        sys.stdout.write("\n")
+                        sys.stdout.flush()
+                    is_thinking = False
+                
+                processed_non_think_start = think_end + len("</think>")
+                current_non_think_content = raw_reply_accumulator[processed_non_think_start:]
+                new_token = current_non_think_content[processed_non_think_len:]
+                processed_non_think_len = len(current_non_think_content)
+        else:
+            new_token = content_token
+
+        if not new_token:
+            # Still accumulate to full_reply
+            full_reply += content_token
             continue
 
         # Check for hallucinated raw JSON tool calls
-        combined_strip = (full_reply + token).strip()
+        combined_strip = (full_reply + new_token).strip()
         if not is_json_hallucination and (combined_strip.startswith("{") or combined_strip.startswith("```")):
             is_json_hallucination = True
 
         if is_json_hallucination:
-            full_reply += token
+            full_reply += content_token
             continue
 
         # Sanitize text for seamless voice playback
-        token = token.replace('\n', ' ')
+        new_token_sanitized = new_token.replace('\n', ' ')
 
-        full_reply += token
-        sentence_buffer += token
+        full_reply += content_token
+        sentence_buffer += new_token_sanitized
 
         # Remove commas right before "sir" to prevent any slight pause
         if ", sir" in sentence_buffer.lower():
@@ -955,7 +1031,7 @@ def _validate_tool_call(func_name, func_args, user_input):
             return False, "Cannot play or queue Spotify without a specific song or artist name."
             
     if func_name == "open_browser":
-        if "url" not in func_args and "query" not in func_args:
+        if "query_or_url" not in func_args:
             return False, "Cannot open browser without a URL or search query."
 
     if func_name == "control_bluetooth":
@@ -1111,7 +1187,10 @@ def execute_tool_call(tool_name, arguments):
             entities = {}
             if arguments.get("device_name"):
                 entities["device_name"] = arguments["device_name"]
-            return handle_bluetooth(intent, entities), False
+            
+            result = handle_bluetooth(intent, entities)
+            needs_followup = (mapped_action == "scan")
+            return result, needs_followup
 
         elif tool_name == "control_window":
             action = arguments.get("action", "minimize")
@@ -1227,9 +1306,21 @@ def think_and_speak(history, user_input, live_context="", tools_to_pass=None):
         if full_reply:
             return full_reply
         elif spoken_results:
-            return "\\n".join(spoken_results)
+            return "\n".join(spoken_results)
         else:
             return "Executed silently."
+
+def is_failure_or_retry_report(text):
+    """Detect if the user is indicating that a previous action failed or did not work."""
+    text_lower = text.lower().strip()
+    fail_keywords = ["did not", "didn't", "failed", "not working", "retry", "try again", "didn’t", "not playing", "not opening", "did not play", "did not open", "did not work", "no response"]
+    for kw in fail_keywords:
+        if kw in text_lower:
+            return True
+    if "did not play" in text_lower or "didn't play" in text_lower or "didn’t play" in text_lower:
+        return True
+    return False
+
 
 def build_live_context(jarvis_state):
     """Build the runtime context string."""
@@ -1237,6 +1328,42 @@ def build_live_context(jarvis_state):
     for k, v in jarvis_state.items():
         ctx += f"- {k}: {v}\\n"
     return ctx
+
+
+def ensure_custom_ollama_model():
+    """Create a custom model in Ollama with the baked-in system prompt to avoid sending it in every query."""
+    global OLLAMA_MODEL, SYSTEM_PROMPT, SYSTEM_PROMPT_BAKED
+    print(f"[JARVIS] Creating/updating custom model in Ollama with baked-in system prompt...")
+    try:
+        base_model = OLLAMA_MODEL
+        if base_model == "jarvis_model":
+            base_model = "gemma4:12b"
+            
+        custom_model = "jarvis_model"
+        
+        # Read or construct Modelfile content
+        modelfile_content = f'FROM {base_model}\\nSYSTEM """{SYSTEM_PROMPT}"""\\n'
+        
+        # Call Ollama API to create model: POST /api/create
+        create_url = OLLAMA_URL.replace("/chat", "") + "/create"
+        response = _ollama_session.post(
+            create_url, 
+            json={
+                "name": custom_model,
+                "modelfile": modelfile_content,
+                "stream": False
+            },
+            timeout=30
+        )
+        if response.status_code == 200:
+            print(f"[JARVIS] Custom model '{custom_model}' created successfully.")
+            OLLAMA_MODEL = custom_model
+            SYSTEM_PROMPT_BAKED = True
+        else:
+            print(f"[JARVIS Warning] Failed to create custom model (status {response.status_code}): {response.text}")
+    except Exception as e:
+        print(f"[JARVIS Warning] Could not create custom Ollama model: {e}")
+
 
 # ==========================================================
 # MAIN LOOP
@@ -1310,6 +1437,8 @@ def main():
         print("[JARVIS] Continuing without persistent memory.")
         memory = None
 
+    ensure_custom_ollama_model()
+
     print("[JARVIS] Initializing Semantic Router...")
     if memory:
         semantic_router = SemanticRouter(JARVIS_TOOLS, memory)
@@ -1323,11 +1452,10 @@ def main():
         "whisper_model": WHISPER_MODEL,
         "llm_model": OLLAMA_MODEL,
         "llm_backend": "Ollama (local)",
-        "tts_engine": "Piper",
-        "tts_voice": f"{PIPER_VOICE} (EN) / {PIPER_VOICE_HINDI} (HI)",
+        "tts_engine": "Kokoro-MLX",
+        "tts_voice": f"{KOKORO_VOICE} (EN)",
         "mic_threshold": speech_threshold,
         "start_time": datetime.now(),
-        "language_mode": "english",
     }
 
     # Time-aware greeting
@@ -1358,12 +1486,8 @@ def main():
 
             # -- TRANSCRIBE --
             try:
-                # Force whisper language if we are in locked mode to improve accuracy and speed
-                lang = WHISPER_LANGUAGE
-                if jarvis_state.get("language_mode") == "hindi":
-                    lang = "hi"
-                elif jarvis_state.get("language_mode") == "english":
-                    lang = "en"
+                # Use configured language or default to en
+                lang = WHISPER_LANGUAGE or "en"
                 
                 text, detected_lang = transcribe(model, frames, audio_interface, lang)
             except Exception as e:
@@ -1377,7 +1501,7 @@ def main():
             clean_text = text.lower().replace('.', '').replace(',', '').replace('!', '').replace('?', '').replace('-', '').strip()
 
             # 100% Bulletproof Wake Word Check using actual text
-            if not any(w in clean_text for w in ["jarvis", "जार्विस", "जारविस", "जारvis"]):
+            if not any(w in clean_text for w in ["jarvis"]):
                 continue
 
             # -- CASE: Just the wake word (user paused, waiting to give command) --
@@ -1388,11 +1512,7 @@ def main():
                 wait_for_speech()
                 
                 # Setup background transcriber for the actual command
-                cmd_lang = WHISPER_LANGUAGE
-                if jarvis_state.get("language_mode") == "hindi":
-                    cmd_lang = "hi"
-                elif jarvis_state.get("language_mode") == "english":
-                    cmd_lang = "en"
+                cmd_lang = WHISPER_LANGUAGE or "en"
                     
                 transcriber = BackgroundTranscriber(model, audio_interface, cmd_lang)
                 transcriber.start()
@@ -1416,20 +1536,6 @@ def main():
 
             print(f"\n[You]    {text}")
 
-            # -- Language Mode Overrides --
-            clean_cmd = text.lower().replace('.', '').replace(',', '').replace('!', '').replace('?', '').strip()
-            
-            hindi_triggers = ["talk in hindi", "speak in hindi", "switch to hindi", "hindi mode", "talkin hindi", "talkin hindee", "talk to me in hindi"]
-            english_triggers = ["talk in english", "speak in english", "switch to english", "english mode", "talkin english", "talk to me in english"]
-
-            if any(t in clean_cmd for t in hindi_triggers):
-                jarvis_state["language_mode"] = "hindi"
-                print("[JARVIS] Language mode locked to: HINDI")
-                speak("Switched to Hindi mode sir.")
-            elif any(t in clean_cmd for t in english_triggers):
-                jarvis_state["language_mode"] = "english"
-                print("[JARVIS] Language mode locked to: ENGLISH")
-                speak("Switched to English mode sir.")
 
             # -- TRIVIAL FAST LANE (instant execution for simple commands) --
             try:
@@ -1459,7 +1565,7 @@ def main():
                 print(f"[JARVIS Fast Lane] Error: {e}")
 
             # -- SEMANTIC ROUTING --
-            tools_to_pass = None
+            tools_to_pass = JARVIS_TOOLS
             query_embedding = None
             if semantic_router:
                 routing_query = text.lower()
@@ -1474,7 +1580,8 @@ def main():
                 query_embedding_np = semantic_router.embedder.encode([routing_query], normalize_embeddings=True)[0]
                 query_embedding = query_embedding_np.tolist()
                 
-                tools_to_pass = semantic_router.route(routing_query, query_embedding=query_embedding_np)
+                # Log router output for visibility, but pass all tools to enable general capability
+                _ = semantic_router.route(routing_query, query_embedding=query_embedding_np)
 
             # -- BUILD DYNAMIC CONTEXT --
             live_context = build_live_context(jarvis_state)

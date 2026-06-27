@@ -16,25 +16,11 @@ from core.fast_lane import (
     execute_intent,
     process_fast_lane,
     try_trivial_fast_lane,
-    translate_hindi_keywords,
     extract_percentage,
     fuzzy_match,
 )
 
 
-def test_hindi_translation():
-    print("\n=== Hindi Translation Tests ===")
-    tests = [
-        ("volume badhao", "volume increase"),
-        ("brightness ghatao", "brightness decrease"),
-        ("band karo", "close"),
-        ("bajao", "play"),
-        ("mute karo", "mute"),
-    ]
-    for hindi, expected in tests:
-        result = translate_hindi_keywords(hindi)
-        status = "✓" if expected in result else "✗"
-        print(f"  {status} '{hindi}' → '{result}' (expected '{expected}')")
 
 
 def test_extract_percentage():
@@ -136,7 +122,7 @@ if __name__ == "__main__":
     print("  JARVIS Fast Lane — macOS Test Suite")
     print("=" * 60)
 
-    test_hindi_translation()
+
     test_extract_percentage()
     test_parse_intent()
     test_trivial_fast_lane()

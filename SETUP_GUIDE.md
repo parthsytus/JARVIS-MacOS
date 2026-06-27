@@ -125,10 +125,10 @@ mkdir -p tools/piper models/piper data logs core/tts_output memory/store
 ### Ollama Model
 
 ```bash
-ollama pull llama3.2
+ollama pull gemma4:12b
 ```
 
-Or whichever model is set in `config/config.py` (default: `llama3.2`).
+Or whichever model is set in `config/config.py` (default: `gemma4:12b`).
 
 ### Piper TTS Binary
 
@@ -157,17 +157,6 @@ Or whichever model is set in `config/config.py` (default: `llama3.2`).
    JARVIS/models/piper/en_US-ryan-high.onnx.json
    ```
 
-### Piper Voice Model (Hindi — Optional)
-
-1. From the same VOICES.md page, find `hi_IN-rohan-medium`
-2. Download both files:
-   - `hi_IN-rohan-medium.onnx`
-   - `hi_IN-rohan-medium.onnx.json`
-3. Place both in:
-   ```
-   JARVIS/models/piper/hi_IN-rohan-medium.onnx
-   JARVIS/models/piper/hi_IN-rohan-medium.onnx.json
-   ```
 
 ### API Keys (.env file)
 
@@ -236,7 +225,7 @@ python core/jarvis_core.py
 ```
 [JARVIS] Starting Ollama server...
 [JARVIS] Loading Piper TTS models into memory...
-[JARVIS] Piper TTS (English & Hindi) loaded successfully.
+[JARVIS] Piper TTS loaded successfully.
 [Memory] Loading embedding model...
 [Memory] Embedding model 'all-MiniLM-L6-v2' loaded on MPS.
 [Memory] ChromaDB ready — 0 existing entries.
@@ -356,7 +345,7 @@ JARVIS is designed as a **fully offline, local-first AI assistant**. The core de
 ### What runs locally (no internet)
 
 - **Speech-to-Text:** Faster-Whisper (CTranslate2) — runs entirely on CPU
-- **Language Model:** Ollama + Llama 3.2 — runs on Metal GPU via Ollama
+- **Language Model:** Ollama + Gemma4:12b — runs on Metal GPU via Ollama
 - **Text-to-Speech:** Piper TTS — runs locally via ONNX runtime
 - **Memory System:** ChromaDB + sentence-transformers — all stored in `memory/store/`
 - **System Control:** Volume, brightness, window management — all via local `osascript`
@@ -385,10 +374,8 @@ JARVIS/
 │   ├── test/                    # Test scripts
 │   │   ├── fast_lane_test.py    # Fast lane tests (macOS version)
 │   │   ├── test_piper.py        # Piper TTS test
-│   │   ├── test_piper_hindi.py  # Piper Hindi TTS test
 │   │   ├── test_whisper.py      # Whisper STT test
-│   │   ├── test_wakeword.py     # Wake word detection test
-│   │   └── test_mms.py          # MMS test
+│   │   └── test_wakeword.py     # Wake word detection test
 │   └── test_memory_optimization.py
 ├── memory/                      # Persistent memory system (preserved from Windows)
 │   ├── __init__.py
