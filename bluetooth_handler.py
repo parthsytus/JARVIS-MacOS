@@ -1,133 +1,10 @@
 import asyncio
 import subprocess
 import json
-import ctypes
-import threading
 import time
 from rapidfuzz import process, fuzz
 from bleak import BleakScanner
 from AppKit import NSWorkspace
-
-# CoreFoundation and Accessibility APIs
-cf = ctypes.CDLL('/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation')
-ax = ctypes.CDLL('/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices')
-
-CFStringRef = ctypes.c_void_p
-CFTypeRef = ctypes.c_void_p
-AXUIElementRef = ctypes.c_void_p
-AXError = ctypes.c_int
-
-cf.CFStringCreateWithCString.restype = CFStringRef
-cf.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
-
-cf.CFStringGetCString.restype = ctypes.c_bool
-cf.CFStringGetCString.argtypes = [CFStringRef, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]
-
-cf.CFRelease.restype = None
-cf.CFRelease.argtypes = [ctypes.c_void_p]
-
-cf.CFArrayGetCount.restype = ctypes.c_long
-cf.CFArrayGetCount.argtypes = [ctypes.c_void_p]
-
-cf.CFArrayGetValueAtIndex.restype = ctypes.c_void_p
-cf.CFArrayGetValueAtIndex.argtypes = [ctypes.c_void_p, ctypes.c_long]
-
-ax.AXUIElementCreateApplication.restype = AXUIElementRef
-ax.AXUIElementCreateApplication.argtypes = [ctypes.c_int]
-
-ax.AXUIElementCopyAttributeValue.restype = AXError
-ax.AXUIElementCopyAttributeValue.argtypes = [AXUIElementRef, CFStringRef, ctypes.POINTER(CFTypeRef)]
-
-ax.AXUIElementPerformAction.restype = AXError
-ax.AXUIElementPerformAction.argtypes = [AXUIElementRef, CFStringRef]
-
-kCFStringEncodingUTF8 = 0x08000100
-
-def _to_cfstring(s):
-    return cf.CFStringCreateWithCString(None, s.encode('utf-8'), kCFStringEncodingUTF8)
-
-def _from_cfstring(cf_str):
-    if not cf_str:
-        return ""
-    buf = ctypes.create_string_buffer(1024)
-    success = cf.CFStringGetCString(cf_str, buf, 1024, kCFStringEncodingUTF8)
-    if success:
-        return buf.value.decode('utf-8')
-    return ""
-
-def _get_attribute(element, attr_name):
-    cf_attr = _to_cfstring(attr_name)
-    val = CFTypeRef()
-    err = ax.AXUIElementCopyAttributeValue(element, cf_attr, ctypes.byref(val))
-    cf.CFRelease(cf_attr)
-    if err == 0 and val.value:
-        return val
-    return None
-
-def _release_cf(val):
-    if val:
-        cf.CFRelease(val)
-
-def _find_and_click_button(element, depth=0, max_depth=10):
-    if depth > max_depth:
-        return False
-
-    # Get Role
-    role_cf = _get_attribute(element, "AXRole")
-    role = _from_cfstring(role_cf)
-    _release_cf(role_cf)
-    
-    # Get Title
-    title_cf = _get_attribute(element, "AXTitle")
-    title = _from_cfstring(title_cf)
-    _release_cf(title_cf)
-    
-    if not title:
-        # Try AXDescription
-        desc_cf = _get_attribute(element, "AXDescription")
-        title = _from_cfstring(desc_cf)
-        _release_cf(desc_cf)
-
-    if role == "AXButton" and title in ["Connect", "Pair", "Accept", "Allow"]:
-        print(f"[Bluetooth Auto-Accept] Found button: {title}")
-        cf_action = _to_cfstring("AXPress")
-        err = ax.AXUIElementPerformAction(element, cf_action)
-        cf.CFRelease(cf_action)
-        if err == 0:
-            print("[Bluetooth Auto-Accept] Successfully clicked button!")
-            return True
-        else:
-            print(f"[Bluetooth Auto-Accept] Failed to click button, err: {err}")
-            return False
-
-    # Traverse children
-    children_cf = _get_attribute(element, "AXChildren")
-    if children_cf:
-        count = cf.CFArrayGetCount(children_cf)
-        for i in range(count):
-            child = cf.CFArrayGetValueAtIndex(children_cf, i)
-            if child:
-                if _find_and_click_button(child, depth + 1, max_depth):
-                    _release_cf(children_cf)
-                    return True
-        _release_cf(children_cf)
-    return False
-
-def _scan_gui_apps():
-    try:
-        workspace = NSWorkspace.sharedWorkspace()
-        suspect_names = ["UserNotificationCenter", "ControlCenter", "Control Center", "BluetoothUIServer", "SystemUIServer", "System Settings", "sharingd", "Notification Center", "NotificationCenter"]
-        for app in workspace.runningApplications():
-            name = app.localizedName()
-            if name in suspect_names:
-                pid = app.processIdentifier()
-                app_ref = ax.AXUIElementCreateApplication(pid)
-                if app_ref:
-                    if _find_and_click_button(app_ref):
-                        return True
-    except Exception as e:
-        print(f"[Bluetooth Auto-Accept] GUI scan error: {e}")
-    return False
 
 
 def _blueutil(args):
@@ -182,32 +59,93 @@ def get_connected_devices():
     return result
 
 
+def phonetic_code(name):
+    """Return a phonetic digit representation of a string for sound-alike matching."""
+    name = "".join([c for c in name.lower() if c.isalpha()])
+    if not name:
+        return ""
+    
+    mapping = {
+        'b': '1', 'f': '1', 'p': '1', 'v': '1',
+        'c': '2', 'g': '2', 'j': '2', 'k': '2', 'q': '2', 's': '2', 'x': '2', 'z': '2',
+        'd': '3', 't': '3',
+        'l': '4',
+        'm': '5', 'n': '5',
+        'r': '6'
+    }
+    
+    code = ""
+    prev_val = ""
+    for char in name:
+        val = mapping.get(char, '')
+        if val:
+            if val != prev_val:
+                code += val
+                prev_val = val
+        else:
+            if char not in ['h', 'w', 'y']:
+                prev_val = ''
+                
+    return code[:4].ljust(4, '0')
+
+
 def find_best_device_match(input_name, device_list):
     """Finds the best matching device from device_list (dicts with 'name') for input_name.
     Matches against full device names AND individual words of device names using both
-    fuzz.ratio and fuzz.partial_ratio.
+    fuzz.ratio and fuzz.partial_ratio, boosted by phonetic similarity.
     Returns: (best_matched_device_dict, score) or (None, 0)"""
     best_device = None
     best_score = 0
     
     input_name_lower = input_name.lower().strip()
+    input_code = phonetic_code(input_name_lower)
     
     for d in device_list:
         dev_name = d.get('name', 'Unknown')
         dev_name_lower = dev_name.lower().strip()
+        dev_words = dev_name_lower.split()
         
         # 1. Full string match ratio
         score_full = fuzz.ratio(input_name_lower, dev_name_lower)
         score_partial = fuzz.partial_ratio(input_name_lower, dev_name_lower)
         
-        # 2. Word-by-word match
+        # 2. Word-by-word match (skip very short words to prevent false positives like 'M51' matching '17')
         word_scores = []
-        for word in dev_name_lower.split():
+        for word in dev_words:
+            if len(word) <= 2:
+                continue
             word_scores.append(fuzz.ratio(input_name_lower, word))
-            word_scores.append(fuzz.partial_ratio(input_name_lower, word))
+            # Only use partial_ratio on longer words to avoid artificially high scores
+            if len(word) >= 4:
+                word_scores.append(fuzz.partial_ratio(input_name_lower, word))
             
         max_word_score = max(word_scores) if word_scores else 0
         device_best = max(score_full, score_partial, max_word_score)
+        
+        # 3. Phonetic matching boost
+        phonetic_match = False
+        if len(input_name_lower) >= 3:
+            # Check full-to-full phonetic match
+            if input_code == phonetic_code(dev_name_lower):
+                phonetic_match = True
+            else:
+                # Check word-level phonetic match
+                input_words = input_name_lower.split()
+                for in_word in input_words:
+                    if len(in_word) >= 3:
+                        in_code = phonetic_code(in_word)
+                        for dev_word in dev_words:
+                            if len(dev_word) >= 3 and in_code == phonetic_code(dev_word):
+                                phonetic_match = True
+                                break
+                    if phonetic_match:
+                        break
+        
+        if phonetic_match:
+            # Boost the score if there is a reasonable baseline similarity (to prevent false collisions)
+            # Raised from 30 to 45 to reduce false positives on short/dissimilar names
+            if device_best >= 45:
+                device_best = max(device_best, 95)
         
         if device_best > best_score:
             best_score = device_best
@@ -345,26 +283,50 @@ async def scan_nearby_devices(filter_keyword=None):
     return result
 
 
-import threading
-import time
+def _find_in_iobt_paired(device_name):
+    """Check IOBluetooth's paired devices for a device by name (fuzzy match).
+    
+    IOBluetooth.pairedDevices() sees devices that blueutil --paired sometimes misses.
+    Returns the MAC address string if found, or None.
+    """
+    try:
+        from IOBluetooth import IOBluetoothDevice
+        paired = IOBluetoothDevice.pairedDevices()
+        if not paired:
+            return None
 
-def auto_accept_pair_request():
-    """Start a non-blocking background loop to click Pair/Connect on macOS dialogs instantly using native accessibility APIs."""
-    def loop():
-        print("[Bluetooth] Starting background auto-accept dialog listener...")
-        for _ in range(150): # 15 seconds max
-            if _scan_gui_apps():
-                print("[Bluetooth Auto-Accept] Native auto-accept clicked the pairing button!")
-                break
-            time.sleep(0.1)
-            
-    t = threading.Thread(target=loop, daemon=True)
-    t.start()
+        # Build a list of dicts for find_best_device_match
+        iobt_devices = []
+        for dev in paired:
+            name = dev.name()
+            addr = dev.addressString()
+            if name and addr:
+                iobt_devices.append({'name': name, 'address': addr})
+
+        if not iobt_devices:
+            return None
+
+        best, score = find_best_device_match(device_name, iobt_devices)
+        if best and score >= 90:
+            return best['address']
+        return None
+    except Exception as e:
+        print(f"[Bluetooth] IOBluetooth paired lookup error: {e}")
+        return None
+
 
 async def connect_to_device(name, paired_devices, scanned_devices):
-    """Connect to a device. Paired devices use blueutil. New devices require
-    Mac system UI for pairing — JARVIS initiates and informs the user.
-    Returns: (success_bool, message_str)"""
+    """Connect to a device using IOBluetoothDevice for silent connections.
+    
+    Paired devices connect silently via IOBluetoothDevice.openConnection() — 
+    no popup, no Accessibility permissions needed.
+    
+    New (unpaired) devices: pair via blueutil first (macOS enforces the security
+    dialog for first-time pairing — this is an OS-level security requirement that
+    cannot be bypassed by any API), then connect silently via IOBluetooth.
+    
+    Returns: (success_bool, message_str)
+    """
     print(f"\n--- Attempting to connect to '{name}' ---")
     start = time.time()
 
@@ -373,92 +335,231 @@ async def connect_to_device(name, paired_devices, scanned_devices):
 
     best_paired, score_paired = find_best_device_match(name, paired_devices)
 
-    success = False
-    message = ""
+    # Also check scanned devices (passed from fast_lane cache or fresh scan)
+    if not scanned_devices:
+        print(f"Device '{name}' not in paired list and no scan results available. Running a quick scan...")
+        scanned_devices = await scan_nearby_devices(filter_keyword=name)
 
-    if best_paired and score_paired >= 60:
+    best_scanned, score_scanned = find_best_device_match(name, scanned_devices)
+
+    # Pick the better match (higher score) — threshold raised to 75
+    THRESHOLD = 75
+    use_paired = best_paired and score_paired >= THRESHOLD
+    use_scanned = best_scanned and score_scanned >= THRESHOLD
+
+    if not use_paired and not use_scanned:
+        print(f"Could not find '{name}' in paired or scanned devices (threshold={THRESHOLD}).")
+        return False, f"Could not find '{name}' in paired or scanned Bluetooth devices."
+
+    # Prefer the higher-scoring match
+    if use_paired and (not use_scanned or score_paired >= score_scanned):
         matched = best_paired
-        addr = matched['address']
-        print(f"Fuzzy matched '{name}' to PAIRED device '{matched['name']}' (score: {score_paired:.1f})")
-        if addr != 'Unknown':
-            # Start background auto-accept process
-            auto_accept_pair_request()
-            
-            result = subprocess.run(
-                ['blueutil', '--connect', addr],
-                capture_output=True
-            )
-            if result.returncode == 0:
-                print(f"Successfully connected to {matched['name']}.")
-                success = True
-                message = f"Successfully connected to paired device '{matched['name']}'."
-            else:
-                print(f"Connection attempt finished. Status: {result.returncode}")
-                message = f"Failed to connect to paired device '{matched['name']}' (status code: {result.returncode})."
-        else:
-            print("Cannot connect — MAC address unknown.")
-            message = f"Cannot connect to paired device '{matched['name']}' because its MAC address is unknown."
+        score = score_paired
+        source = "paired"
     else:
-        # New device — check scanned devices.
-        # If not scanned, run a quick scan to see if it's nearby.
-        if not scanned_devices:
-            print(f"Device '{name}' not in paired list and no scan results available. Running a quick scan...")
-            scanned_devices = await scan_nearby_devices(filter_keyword=name)
+        matched = best_scanned
+        score = score_scanned
+        source = "scanned"
 
-        best_scanned, score_scanned = find_best_device_match(name, scanned_devices)
+    addr = matched['address']
+    print(f"Fuzzy matched '{name}' to {source.upper()} device '{matched['name']}' (score: {score:.1f})")
 
-        if best_scanned and score_scanned >= 60:
-            matched = best_scanned
-            addr = matched['address']
-            is_ble = matched.get('is_ble', False)
+    if addr == 'Unknown':
+        print("Cannot connect — MAC address unknown.")
+        return False, f"Cannot connect to {source} device '{matched['name']}' because its MAC address is unknown."
 
-            if is_ble:
-                print(f"Initiating BLE connection to new device '{matched['name']}' using Bleak...")
-                print("NOTE: macOS requires confirmation in the system pairing dialog (automatically accepting...).")
-                
-                # Start background auto-accept process
-                auto_accept_pair_request()
-                
-                try:
-                    from bleak import BleakClient
-                    async with BleakClient(addr, timeout=15.0) as client:
-                        if client.is_connected:
-                            print(f"Successfully connected to BLE device '{matched['name']}'.")
-                            success = True
-                            message = f"Successfully paired and connected to new BLE device '{matched['name']}'."
-                        else:
-                            print(f"Bleak connection finished but is_connected is False.")
-                            message = f"Bleak connection finished for new BLE device '{matched['name']}' but is_connected is False."
-                except Exception as e:
-                    print(f"[Bluetooth Error] Bleak connection failed: {e}")
-                    message = f"Failed to pair or connect to BLE device '{matched['name']}': {e}"
-            else:
-                print(f"Initiating pairing with new classic device '{matched['name']}'...")
-                print("NOTE: macOS requires confirmation in the system pairing dialog (automatically accepting...).")
-                
-                # Start background auto-accept process
-                auto_accept_pair_request()
-                
-                res = subprocess.run(['blueutil', '--pair', addr], capture_output=True, text=True)
-                if res.returncode != 0:
-                    print(f"[Bluetooth Error] blueutil --pair failed with code {res.returncode}: {res.stderr.strip()}")
-                    message = f"Failed to pair classic device '{matched['name']}' (code {res.returncode}: {res.stderr.strip()})."
+    is_ble = matched.get('is_ble', False)
+
+    # If matched from scan, check if it's actually already paired.
+    # BLE scans return a CoreBluetooth UUID (e.g. 698503B9-...) as the address,
+    # but blueutil and IOBluetooth need the real MAC (e.g. e8-93-60-47-db-ca).
+    # Cross-reference the scanned device name against the paired list to recover
+    # the real MAC and skip the redundant --pair step.
+    if source == "scanned":
+        # First check: blueutil's paired list
+        found_paired = False
+        if paired_devices:
+            paired_match, paired_score = find_best_device_match(matched['name'], paired_devices)
+            if paired_match and paired_score >= 90:
+                print(f"[Bluetooth] Device '{matched['name']}' found in blueutil paired list (MAC: {paired_match['address']}), skipping --pair.")
+                addr = paired_match['address']
+                source = "paired"
+                is_ble = False
+                found_paired = True
+
+        # Second check: IOBluetooth's paired devices (sees devices blueutil misses)
+        if not found_paired:
+            iobt_addr = _find_in_iobt_paired(matched['name'])
+            if iobt_addr:
+                print(f"[Bluetooth] Device '{matched['name']}' found in IOBluetooth paired list (MAC: {iobt_addr}), skipping --pair.")
+                addr = iobt_addr
+                source = "paired"
+                is_ble = False
+
+    # For truly new (unpaired) devices, resolve the best address for pairing.
+    # BLE scans return UUIDs; blueutil --pair needs real MAC addresses.
+    # Many devices (speakers, headphones) are dual-mode: they advertise on BLE
+    # but actually connect via Classic. Check the classic scan results for a real MAC.
+    if source == "scanned" and is_ble:
+        # Check if the same device appeared in the classic scan with a real MAC
+        classic_match = None
+        if scanned_devices:
+            for sd in scanned_devices:
+                if not sd.get('is_ble', True) and sd.get('name', '') == matched['name']:
+                    classic_match = sd
+                    break
+            if not classic_match:
+                # Fuzzy match against classic-only devices from the scan
+                classic_only = [sd for sd in scanned_devices if not sd.get('is_ble', True)]
+                if classic_only:
+                    cm, cs = find_best_device_match(matched['name'], classic_only)
+                    if cm and cs >= 85:
+                        classic_match = cm
+
+        if classic_match:
+            print(f"[Bluetooth] Found classic MAC for '{matched['name']}': {classic_match['address']} (dual-mode device)")
+            addr = classic_match['address']
+            is_ble = False  # Use classic pairing path
+
+    # Pair new classic devices via blueutil (has real MAC address)
+    if source == "scanned" and not is_ble:
+        print(f"Initiating classic pairing with new device '{matched['name']}'...")
+        res = subprocess.run(['blueutil', '--pair', addr], capture_output=True, text=True)
+        if res.returncode != 0:
+            print(f"[Bluetooth Error] blueutil --pair failed with code {res.returncode}: {res.stderr.strip()}")
+            return False, f"Failed to pair device '{matched['name']}' (code {res.returncode}: {res.stderr.strip()})."
+        print(f"Pairing complete for '{matched['name']}'.")
+
+    # Connect using appropriate method
+    if is_ble:
+        # BLE devices: try direct Bleak connection first (no popup)
+        # If that fails with pairing error, fall back to blueutil --pair which triggers system popup
+        try:
+            from bleak import BleakClient
+            async with BleakClient(addr, timeout=15.0) as client:
+                if client.is_connected:
+                    print(f"Successfully connected to BLE device '{matched['name']}'.")
+                    elapsed = (time.time() - start) * 1000
+                    print(f"[Time taken: {elapsed:.2f} ms]")
+                    return True, f"Successfully connected to BLE device '{matched['name']}'."
                 else:
-                    print(f"Pairing request sent and accepted. Connecting to classic device '{matched['name']}'...")
-                    connect_res = subprocess.run(['blueutil', '--connect', addr], capture_output=True, text=True)
-                    if connect_res.returncode == 0:
-                        print(f"Successfully connected to classic device '{matched['name']}'.")
-                        success = True
-                        message = f"Successfully paired and connected to classic device '{matched['name']}'."
-                    else:
-                        print(f"Failed to connect to classic device after pairing. Status: {connect_res.returncode}")
-                        message = f"Successfully paired classic device '{matched['name']}' but failed to connect (status code {connect_res.returncode})."
-        else:
-            print(f"Could not find '{name}' in paired or scanned devices.")
-            message = f"Could not find '{name}' in paired or scanned Bluetooth devices."
+                    return False, f"Connection attempt finished for BLE device '{matched['name']}' but device reports not connected."
+        except Exception as e:
+            err_str = str(e).lower()
+            # If Bleak fails with pairing/auth error, try blueutil --pair which triggers system popup
+            if "pair" in err_str or "auth" in err_str or "encrypt" in err_str or "authentication" in err_str or "pairing" in err_str:
+                print(f"[Bluetooth] BLE connection requires pairing, triggering system popup via blueutil...")
+                # Run blueutil --pair which will show the system pairing dialog
+                res = subprocess.run(['blueutil', '--pair', addr], capture_output=True, text=True)
+                if res.returncode == 0:
+                    print(f"Pairing complete for '{matched['name']}'.")
+                    # Now try connecting again after pairing
+                    try:
+                        from bleak import BleakClient
+                        async with BleakClient(addr, timeout=15.0) as client:
+                            if client.is_connected:
+                                elapsed = (time.time() - start) * 1000
+                                print(f"[Time taken: {elapsed:.2f} ms]")
+                                return True, f"Successfully paired and connected to BLE device '{matched['name']}'."
+                            else:
+                                return False, f"Paired but BLE device '{matched['name']}' reports not connected."
+                    except Exception as e2:
+                        return False, f"Paired but failed to connect: {e2}"
+                else:
+                    print(f"[Bluetooth Error] blueutil --pair failed (code {res.returncode}: {res.stderr.strip()})")
+                    return False, f"Failed to pair with '{matched['name']}' (code {res.returncode})."
+            else:
+                print(f"[Bluetooth Error] Bleak connection failed: {e}")
+                return False, f"Failed to connect to BLE device '{matched['name']}': {e}"
+    else:
+        # Classic (non-BLE) device: use IOBluetooth silent connection
+        return await _connect_classic_silent(addr, matched['name'])
 
-    print(f"[Time taken: {(time.time() - start) * 1000:.2f} ms]")
-    return success, message
+
+async def _connect_classic_silent(address, device_name):
+    """Connect to a paired Classic Bluetooth device silently using IOBluetoothDevice.
+    
+    Uses openConnection_withPageTimeout_authenticationRequired_ with
+    authenticationRequired=False to prevent macOS from showing the
+    "Connection Request from:" confirmation dialog.
+    
+    Returns: (success_bool, message_str)
+    """
+    try:
+        from IOBluetooth import IOBluetoothDevice
+    except ImportError:
+        print("[Bluetooth] IOBluetooth framework not available, falling back to blueutil.")
+        return _connect_classic_blueutil_fallback(address, device_name)
+
+    try:
+        # Find the device by MAC address in the system's known devices
+        device = IOBluetoothDevice.deviceWithAddressString_(address)
+        if not device:
+            print(f"[Bluetooth] IOBluetooth could not find device with address {address}, falling back to blueutil.")
+            return _connect_classic_blueutil_fallback(address, device_name)
+
+        print(f"[Bluetooth] Opening connection to '{device_name}' via IOBluetooth (silent, no popup)...")
+
+        # Try up to 3 times with small delay - macOS sometimes shows popup 
+        # for audio/HID devices even with authenticationRequired=False
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            print(f"[Bluetooth] Opening connection to '{device_name}' via IOBluetooth (attempt {attempt + 1}/{max_attempts}, silent, no popup)...")
+
+            status = device.openConnection_withPageTimeout_authenticationRequired_(
+                None,   # no delegate
+                10000,  # page timeout ~6.25 seconds (in 0.625ms Bluetooth slots)
+                False   # DO NOT require authentication — suppresses the popup
+            )
+
+            if status == 0:
+                print(f"[Bluetooth] Successfully connected to '{device_name}' via IOBluetooth (attempt {attempt + 1}).")
+                return True, f"Successfully connected to '{device_name}'."
+            else:
+                print(f"[Bluetooth] IOBluetooth openConnection returned error {status} (attempt {attempt + 1}/{max_attempts})")
+                if attempt < max_attempts - 1:
+                    time.sleep(0.5)  # Brief delay before retry
+
+# All IOBluetooth attempts failed - fallback to blueutil
+        print(f"[Bluetooth] IOBluetooth openConnection failed after {max_attempts} attempts, falling back to blueutil.")
+        return _connect_classic_blueutil_fallback(address, device_name)
+
+    except Exception as e:
+        print(f"[Bluetooth] IOBluetooth error: {e}, falling back to blueutil.")
+        return _connect_classic_blueutil_fallback(address, device_name)
+
+
+def _run_auto_accept() -> bool:
+    """Run the external auto-accept script once to click any pairing dialog.
+    Returns True if the script reported clicking a button."""
+    try:
+        import os
+        script_path = os.path.join(os.path.dirname(__file__), "bluetooth_auto_accept.py")
+        if not os.path.exists(script_path):
+            return False
+        result = subprocess.run(
+            ["python3", script_path],
+            capture_output=True, text=True, timeout=10
+        )
+        return result.returncode == 0
+    except Exception as e:
+        print(f"[Bluetooth] Auto-accept script error: {e}")
+        return False
+
+
+def _connect_classic_blueutil_fallback(address, device_name):
+    """Fallback: connect via blueutil --connect (for cases where IOBluetooth fails).
+    
+    Returns: (success_bool, message_str)
+    """
+    print(f"[Bluetooth] Connecting to '{device_name}' via blueutil fallback...")
+    connect_res = subprocess.run(['blueutil', '--connect', address], capture_output=True, text=True)
+    if connect_res.returncode == 0:
+        print(f"[Bluetooth] Successfully connected to '{device_name}' via blueutil.")
+        return True, f"Successfully connected to '{device_name}'."
+    else:
+        print(f"[Bluetooth] blueutil --connect failed (code {connect_res.returncode}: {connect_res.stderr.strip()}).")
+        return False, f"Failed to connect to '{device_name}' (code {connect_res.returncode})."
 
 
 async def main():

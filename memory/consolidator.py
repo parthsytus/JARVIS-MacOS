@@ -11,6 +11,7 @@ import re
 from datetime import datetime
 
 import requests
+import threading
 
 
 class SessionConsolidator:
@@ -228,6 +229,8 @@ RESPOND WITH JSON ONLY:"""
                     "model": self.ollama_model,
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False,
+                    "keep_alive": -1,
+                    "format": "json",
                     "options": {
                         "num_ctx": 4096,
                         "num_predict": 500,

@@ -10,7 +10,7 @@ JARVIS MacOS is a complete port of the original JARVIS Windows project, reimagin
 
 - **🗣️ Wake Word Detection:** Listens passively for "Hey Jarvis" using `openwakeword`.
 - **👂 Local Speech-to-Text:** Fast, accurate voice transcription using `faster-whisper`.
-- **🧠 Local LLM:** Runs `Gemma4:12b` (or any model) locally via Ollama with full Apple Metal GPU acceleration.
+- **🧠 Local LLM:** Runs `Gemma4:12b-nvfp4` (or any model) locally via Ollama with full Apple Metal GPU acceleration.
 - **🗣️ Local Text-to-Speech:** Real-time voice generation using `Piper TTS` (English voice).
 - **💾 Long-Term Memory:** Persistent RAG memory using `ChromaDB`, `sentence-transformers`, and a multi-tiered memory architecture (Episodic, Semantic, Procedural).
 - **💻 Native macOS Control:** Control your Mac's volume, brightness, windows, apps, clipboard, and file system natively via AppleScript (`osascript`) and Homebrew tools.

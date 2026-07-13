@@ -120,20 +120,124 @@ def _mac_unmute():
         check=True
     )
 
+# Cache DisplayServices and CoreGraphics for brightness control (loaded once at import)
+try:
+    import ctypes as _ctypes
+    _ds = _ctypes.CDLL('/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices')
+    _ds.DisplayServicesSetBrightness.argtypes = [_ctypes.c_uint32, _ctypes.c_float]
+    _ds.DisplayServicesSetBrightness.restype = _ctypes.c_int
+    _ds.DisplayServicesGetBrightness.argtypes = [_ctypes.c_uint32, _ctypes.POINTER(_ctypes.c_float)]
+    _ds.DisplayServicesGetBrightness.restype = _ctypes.c_int
+    _cg = _ctypes.CDLL('/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics')
+    _cg.CGMainDisplayID.restype = _ctypes.c_uint32
+    _HAS_DISPLAY_SERVICES = True
+except Exception:
+    _HAS_DISPLAY_SERVICES = False
+
 def _mac_set_brightness(val):
-    # Requires: brew install brightness
     level = max(0.0, min(1.0, val / 100.0))
-    subprocess.run(['brightness', str(level)], capture_output=True)
+    if _HAS_DISPLAY_SERVICES:
+        try:
+            display_id = _cg.CGMainDisplayID()
+            ret = _ds.DisplayServicesSetBrightness(display_id, level)
+            if ret == 0:
+                return
+        except Exception as e:
+            print(f"Error setting brightness via DisplayServices: {e}")
+    try:
+        subprocess.run(['brightness', str(level)], capture_output=True)
+    except Exception:
+        pass
+
 
 def _mac_get_brightness():
-    result = subprocess.run(['brightness', '-l'], capture_output=True, text=True)
-    match = re.search(r'brightness:\s*([\d.]+)', result.stdout)
-    return int(float(match.group(1)) * 100) if match else 50
+    if _HAS_DISPLAY_SERVICES:
+        try:
+            display_id = _cg.CGMainDisplayID()
+            val = _ctypes.c_float()
+            ret = _ds.DisplayServicesGetBrightness(display_id, _ctypes.byref(val))
+            if ret == 0:
+                return int(val.value * 100)
+        except Exception as e:
+            print(f"Error getting brightness via DisplayServices: {e}")
+        
+    try:
+        result = subprocess.run(['brightness', '-l'], capture_output=True, text=True)
+        match = re.search(r'brightness:\s*([\d.]+)', result.stdout)
+        if match:
+            return int(float(match.group(1)) * 100)
+    except Exception:
+        pass
+    return 50
+
+
+# ---------------------------------------------------------------------------
+# DYNAMIC PATH RESOLUTION
+# ---------------------------------------------------------------------------
+
+def resolve_save_path(folder_spec, custom_name=None):
+    """
+    Resolve a folder specification to an actual filesystem path.
+    
+    Args:
+        folder_spec: User-specified folder (e.g., "desktop", "documents", "my_folder", "~/projects")
+        custom_name: Optional custom filename/folder name to append
+    
+    Returns:
+        Full resolved path as string
+    """
+    import os
+    
+    if not folder_spec or folder_spec.lower() in ("default", "desktop", ""):
+        base_path = os.path.expanduser("~/Desktop")
+    else:
+        folder_lower = folder_spec.lower().strip()
+        
+        # Standard macOS folders
+        standard_folders = {
+            "desktop": "~/Desktop",
+            "documents": "~/Documents", 
+            "downloads": "~/Downloads",
+            "download": "~/Downloads",
+            "pictures": "~/Pictures",
+            "picture": "~/Pictures",
+            "music": "~/Music",
+            "movies": "~/Movies",
+            "videos": "~/Movies",
+            "video": "~/Movies",
+        }
+        
+        if folder_lower in standard_folders:
+            base_path = os.path.expanduser(standard_folders[folder_lower])
+        else:
+            # Handle relative/absolute paths
+            if folder_spec.startswith("~"):
+                base_path = os.path.expanduser(folder_spec)
+            elif folder_spec.startswith("/"):
+                base_path = folder_spec
+            else:
+                # Relative to home directory
+                base_path = os.path.expanduser(f"~/{folder_spec}")
+    
+    # Ensure directory exists
+    os.makedirs(base_path, exist_ok=True)
+    
+    # If custom_name provided, append it
+    if custom_name:
+        return os.path.join(base_path, custom_name)
+    
+    # If base_path is a directory (standard folder or explicitly given directory), auto-generate filename
+    if os.path.isdir(base_path) or folder_lower in standard_folders:
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"research_{timestamp}.txt"
+        return os.path.join(base_path, filename)
+    
+    # If base_path is a file path (not a directory), return as-is
+    return base_path
 
 def _mac_minimize_active():
     subprocess.run(['osascript', '-e',
-        'tell application "System Events" to set miniaturized of '
-        '(first window of (first application process whose frontmost is true)) to true'],
+        'tell application "System Events" to keystroke "m" using command down'],
         capture_output=True)
 
 def _mac_maximize_active():
@@ -167,6 +271,112 @@ def _mac_select_all():
         'tell application "System Events" to keystroke "a" using command down'],
         capture_output=True)
 
+def _mac_tile_left(app_name=None):
+    """Tile an app/window to the left half of the screen."""
+    if app_name:
+        # Launch if not running, then focus
+        subprocess.Popen(['open', '-a', app_name])
+        time.sleep(0.8)
+    script = '''
+    tell application "Finder"
+        set _bounds to bounds of window of desktop
+        set screenW to item 3 of _bounds
+        set screenH to item 4 of _bounds
+    end tell
+    tell application "System Events"
+        set frontApp to first application process whose frontmost is true
+        tell frontApp
+            set position of window 1 to {0, 25}
+            set size of window 1 to {screenW div 2, screenH - 25}
+        end tell
+    end tell
+    '''
+    subprocess.run(['osascript', '-e', script], capture_output=True)
+
+def _mac_tile_right(app_name=None):
+    """Tile an app/window to the right half of the screen."""
+    if app_name:
+        subprocess.Popen(['open', '-a', app_name])
+        time.sleep(0.8)
+    script = '''
+    tell application "Finder"
+        set _bounds to bounds of window of desktop
+        set screenW to item 3 of _bounds
+        set screenH to item 4 of _bounds
+    end tell
+    tell application "System Events"
+        set frontApp to first application process whose frontmost is true
+        tell frontApp
+            set position of window 1 to {screenW div 2, 25}
+            set size of window 1 to {screenW div 2, screenH - 25}
+        end tell
+    end tell
+    '''
+    subprocess.run(['osascript', '-e', script], capture_output=True)
+
+def _mac_hide_app():
+    """Hide the active application (Cmd+H)."""
+    subprocess.run(['osascript', '-e',
+        'tell application "System Events" to keystroke "h" using command down'],
+        capture_output=True)
+
+def _mac_fullscreen(app_name=None):
+    """Toggle fullscreen for an app/window (Ctrl+Cmd+F)."""
+    if app_name:
+        subprocess.Popen(['open', '-a', app_name])
+        time.sleep(0.8)
+    script = '''
+    tell application "System Events"
+        set frontApp to first application process whose frontmost is true
+        tell frontApp
+            keystroke "f" using {control down, command down}
+        end tell
+    end tell
+    '''
+    subprocess.run(['osascript', '-e', script], capture_output=True)
+
+def _mac_transfer_left(app_name=None):
+    """Transfer/move an app/window to the left half of the screen."""
+    if app_name:
+        subprocess.Popen(['open', '-a', app_name])
+        time.sleep(0.8)
+    script = '''
+    tell application "Finder"
+        set _bounds to bounds of window of desktop
+        set screenW to item 3 of _bounds
+        set screenH to item 4 of _bounds
+    end tell
+    tell application "System Events"
+        set frontApp to first application process whose frontmost is true
+        tell frontApp
+            set position of window 1 to {0, 25}
+            set size of window 1 to {screenW div 2, screenH - 25}
+        end tell
+    end tell
+    '''
+    subprocess.run(['osascript', '-e', script], capture_output=True)
+
+def _mac_transfer_right(app_name=None):
+    """Transfer/move an app/window to the right half of the screen."""
+    if app_name:
+        subprocess.Popen(['open', '-a', app_name])
+        time.sleep(0.8)
+    script = '''
+    tell application "Finder"
+        set _bounds to bounds of window of desktop
+        set screenW to item 3 of _bounds
+        set screenH to item 4 of _bounds
+    end tell
+    tell application "System Events"
+        set frontApp to first application process whose frontmost is true
+        tell frontApp
+            set position of window 1 to {screenW div 2, 25}
+            set size of window 1 to {screenW div 2, screenH - 25}
+        end tell
+    end tell
+    '''
+    subprocess.run(['osascript', '-e', script], capture_output=True)
+
 # ---------------------------------------------------------------------------
 # UTILITIES
 # ---------------------------------------------------------------------------
@@ -186,14 +396,72 @@ def extract_percentage(text):
         return int(match.group(1))
     return None
 
+def soundex(name):
+    """Return the Soundex code for a given name string."""
+    name = "".join([c for c in name.lower() if c.isalpha()])
+    if not name:
+        return ""
+    
+    mapping = {
+        'b': '1', 'f': '1', 'p': '1', 'v': '1',
+        'c': '2', 'g': '2', 'j': '2', 'k': '2', 'q': '2', 's': '2', 'x': '2', 'z': '2',
+        'd': '3', 't': '3',
+        'l': '4',
+        'm': '5', 'n': '5',
+        'r': '6'
+    }
+    
+    first_char = name[0].upper()
+    code = first_char
+    
+    prev_val = mapping.get(name[0], '')
+    for char in name[1:]:
+        val = mapping.get(char, '')
+        if val:
+            if val != prev_val:
+                code += val
+                prev_val = val
+        else:
+            if char not in ['h', 'w', 'y']:
+                prev_val = ''
+                
+    return code[:4].ljust(4, '0')
+
+
 def fuzzy_match(query, choices, threshold=70):
+    query_lower = query.lower()
+    
+    # 1. Direct lower case match
+    if query_lower in choices:
+        return query_lower
+        
+    # 2. Check phonetic (Soundex) match
+    if len(query_lower) >= 3:
+        query_soundex = soundex(query_lower)
+        soundex_matches = []
+        for choice in choices:
+            choice_words = choice.split()
+            for word in choice_words + [choice]:
+                if len(word) >= 3 and soundex(word) == query_soundex:
+                    soundex_matches.append(choice)
+                    break
+        
+        if soundex_matches:
+            if HAS_FUZZ:
+                result = process.extractOne(query_lower, soundex_matches, scorer=fuzz.ratio)
+                if result and result[1] >= 50:
+                    return result[0]
+            else:
+                return soundex_matches[0]
+                
+    # 3. Fallback to standard fuzzy match
     if not HAS_FUZZ:
         for choice in choices:
-            if query in choice or choice in query:
+            if query_lower in choice or choice in query_lower:
                 return choice
         return None
     
-    result = process.extractOne(query, choices, scorer=fuzz.partial_ratio)
+    result = process.extractOne(query_lower, choices, scorer=fuzz.WRatio)
     if result and result[1] >= threshold:
         return result[0]
     return None
@@ -293,22 +561,20 @@ def get_installed_apps():
         except Exception as e:
             print(f"Warning: Failed to read app directory {sdir}: {e}")
             
-    # As a fallback, run system_profiler in a background thread to populate any other deeply nested apps
+    # As a fallback, use mdfind (Spotlight index) — ~100ms vs system_profiler's 5-15s
     def background_scan():
         try:
             output = subprocess.check_output(
-                ['system_profiler', 'SPApplicationsDataType', '-json'],
+                ['mdfind', 'kMDItemContentType == "com.apple.application-bundle"'],
                 text=True
             )
-            data = json.loads(output)
-            apps_list = data.get('SPApplicationsDataType', [])
-            for app in apps_list:
-                name = app.get('_name', '')
-                path = app.get('path', '')
-                if name and path:
-                    _cached_apps[name.lower()] = path
+            for line in output.strip().split('\n'):
+                if line.endswith('.app'):
+                    name = os.path.basename(line)[:-4]  # strip .app
+                    if name and name.lower() not in _cached_apps:
+                        _cached_apps[name.lower()] = line
         except Exception as e:
-            print(f"Warning: Background app scan failed: {e}")
+            print(f"Warning: Background app scan (mdfind) failed: {e}")
 
     threading.Thread(target=background_scan, daemon=True).start()
     _cached_apps_time = time.time()
@@ -336,9 +602,16 @@ def handle_app_launcher(intent, entities):
             return f"Failed to launch {matched_app_name}: {e}"
     else:
         # Fallback: try opening by name directly using 'open -a'
+        # Use subprocess.run with timeout to wait for actual result, not just spawn
         try:
-            subprocess.Popen(['open', '-a', app_name])
-            return f"Launched {app_name}"
+            result = subprocess.run(['open', '-a', app_name], capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                return f"Launched {app_name}"
+            else:
+                stderr = result.stderr.strip()
+                return f"Failed to launch '{app_name}': {stderr or 'app not found'}"
+        except subprocess.TimeoutExpired:
+            return f"Failed to launch '{app_name}': timeout (app may be hung)"
         except Exception as e:
             return f"Failed: Could not find any app matching '{app_name}'"
 
@@ -746,11 +1019,45 @@ def handle_file_operations(intent, entities):
 def handle_window_control(intent, entities):
     action = intent['action']
     target = entities.get('window_name', 'this')
+    app_name = entities.get('app_name', None)
     
     try:
+        # Tiling/transfer actions — open/focus app and position it
+        if action in ("tile_left", "tile_right", "transfer_left", "transfer_right"):
+            app = app_name or target
+            if app in ('this', 'all'):
+                app = None  # Tile whatever is frontmost
+            
+            # For transfer actions, focus the app first (don't launch new)
+            if action.startswith("transfer"):
+                if app:
+                    _mac_focus_app(app)
+                    import time
+                    time.sleep(0.5)
+                if action == "transfer_left":
+                    _mac_tile_left(None)
+                    return f"Transferred {app or 'active window'} to left half"
+                else:
+                    _mac_tile_right(None)
+                    return f"Transferred {app or 'active window'} to right half"
+            
+            # For tile actions, launch if needed then position
+            if action == "tile_left":
+                _mac_tile_left(app)
+                return f"Tiled {app or 'active window'} to left half"
+            else:
+                _mac_tile_right(app)
+                return f"Tiled {app or 'active window'} to right half"
+        
+        if action == "fullscreen":
+            app = app_name or target
+            if app in ('this', 'all'):
+                app = None
+            _mac_fullscreen(app)
+            return f"Fullscreened {app or 'active window'}"
+        
         if target == 'all':
             if action == "minimize":
-                # Minimize all windows using Mission Control
                 subprocess.run(['osascript', '-e',
                     'tell application "System Events" to keystroke "m" using {command down, option down}'],
                     capture_output=True)
@@ -760,6 +1067,11 @@ def handle_window_control(intent, entities):
                     'tell application "System Events" to keystroke "w" using {command down, option down}'],
                     capture_output=True)
                 return f"Closed all windows"
+            elif action == "hide":
+                subprocess.run(['osascript', '-e',
+                    'tell application "System Events" to keystroke "h" using {command down, option down}'],
+                    capture_output=True)
+                return f"Hidden all windows"
             return f"{action.capitalize()}d all windows"
             
         elif target == 'this':
@@ -779,6 +1091,9 @@ def handle_window_control(intent, entities):
                     'tell application "System Events" to keystroke "f" using {control down, command down}'],
                     capture_output=True)
                 return "Restored active window"
+            elif action == "hide":
+                _mac_hide_app()
+                return "Hidden active window"
             return "No active window found"
             
         else:
@@ -798,6 +1113,8 @@ def handle_window_control(intent, entities):
                 subprocess.run(['osascript', '-e',
                     'tell application "System Events" to keystroke "f" using {control down, command down}'],
                     capture_output=True)
+            elif action == "hide":
+                _mac_hide_app()
             return f"{action.capitalize()}d window '{target}'"
     except Exception as e:
         return f"Window control failed: {str(e)}"
@@ -1005,8 +1322,54 @@ def parse_intent(text, context=None):
                 match = re.search(r'hdmi\s*(\d+)', clause)
                 if match: entities['input'] = f"HDMI {match.group(1)}"
                 
+        # WINDOW CONTROL (moved before SPOTIFY to catch "move spotify to right" etc.)
+        elif "minimize" in clause or "maximize" in clause or "restore" in clause or "close" in clause or "fullscreen" in clause or "full screen" in clause or "transfer" in clause or "move" in clause or ("tile" in clause and ("left" in clause or "right" in clause)):
+            action = None
+            if "minimize" in clause: action = "minimize"
+            elif "maximize" in clause: action = "maximize"
+            elif "close" in clause: action = "close"
+            elif "restore" in clause: action = "restore"
+            elif "fullscreen" in clause or "full screen" in clause: action = "fullscreen"
+            elif "transfer" in clause or "move" in clause:
+                if "left" in clause:
+                    action = "transfer_left"
+                elif "right" in clause:
+                    action = "transfer_right"
+            elif "tile" in clause:
+                if "left" in clause:
+                    action = "tile_left"
+                elif "right" in clause:
+                    action = "tile_right"
+            
+            if action:
+                intent = {"category": "window", "action": action}
+                if "all" in clause or "sab" in clause or "saare" in clause:
+                    entities['window_name'] = "all"
+                elif "this" in clause or "ye" in clause or "current" in clause:
+                    entities['window_name'] = "this"
+                else:
+# Extract the target app/window name
+                    target = clause
+                    for word in ["minimize", "maximize", "close", "restore", "fullscreen", "full", "screen", "transfer", "move", "tile", "to", "left", "right", "window", "windows", "set", "karo", "on", "in", "the", "half", "side", "open"]:
+                        target = re.sub(r'\b' + re.escape(word) + r'\b', '', target, flags=re.IGNORECASE)
+                    target = re.sub(r'\s+', ' ', target).strip()
+                    if target:
+                        # For fullscreen/tile actions, use app_name; for others use window_name
+                        if action in ["fullscreen", "tile_left", "tile_right", "transfer_left", "transfer_right"]:
+                            entities['app_name'] = target
+                        else:
+                            entities['window_name'] = target
+                    else:
+                        entities['window_name'] = "this"
+
         # SPOTIFY
         elif any(k in clause for k in ["play", "pause", "stop", "queue", "song", "spotify", "next", "previous", "skip", "loop", "repeat", "shuffle", "restart", "start over", "beginning"]):
+            from config.config import GROQ_API_KEY
+            if GROQ_API_KEY:
+                # Bypass Fast Lane media parsing for Groq. 
+                # This forces the text to the cloud brain so it can maintain conversation context!
+                continue
+            
             cleaned_clause = clause.strip()
             if re.match(r'^(play\s+)?(the\s+)?next(\s+song|\s+track)?(\s+in\s+queue)?$', cleaned_clause) or "skip" in cleaned_clause:
                 action = "next"
@@ -1085,28 +1448,7 @@ def parse_intent(text, context=None):
         elif "open" in clause and (".com" in clause or ".org" in clause or "url" in clause):
             intent = {"category": "browser", "action": "open"}
             entities['url'] = clause.replace("open ", "").strip()
-            
-        # WINDOW CONTROL
-        elif "minimize" in clause or "maximize" in clause or "restore" in clause or "close" in clause:
-            action = None
-            if "minimize" in clause: action = "minimize"
-            elif "maximize" in clause: action = "maximize"
-            elif "close" in clause: action = "close"
-            elif "restore" in clause: action = "restore"
-            
-            if action:
-                intent = {"category": "window", "action": action}
-                if "all" in clause or "sab" in clause or "saare" in clause:
-                    entities['window_name'] = "all"
-                elif "this" in clause or "ye" in clause or "current" in clause:
-                    entities['window_name'] = "this"
-                else:
-                    target = clause.replace(action, "").replace("window", "").replace("windows", "").replace("set", "").replace("karo", "").strip()
-                    if target:
-                        entities['window_name'] = target
-                    else:
-                        entities['window_name'] = "this"
-
+             
         # FILE OPERATIONS
         if not intent:
             file_actions = ["copy", "paste", "cut", "rename", "select all", "delete"]
@@ -1161,10 +1503,76 @@ def parse_intent(text, context=None):
                                 folder = f"{drive_letter} drive"
                             else:
                                 folder = "current"
-                                
+                                 
                         entities['folder'] = folder
                         if drive_letter and folder != f"{drive_letter} drive":
                             entities['drive'] = drive_letter
+
+        # DEEP RESEARCH (before app launcher fallback)
+        if not intent and ("deep research" in clause or ("research" in clause and ("about" in clause or "on" in clause))):
+            # Extract topic and save path
+            topic = ""
+            save_path = None
+            
+            # Pattern: "deep research about X" or "research about X"
+            if "deep research about" in clause:
+                topic_part = clause.split("deep research about", 1)[1].strip()
+            elif "research about" in clause:
+                topic_part = clause.split("research about", 1)[1].strip()
+            else:
+                topic_part = clause
+            
+            # Check for save location
+            save_location = None
+            if "save it to" in topic_part:
+                # Split on "save it to" but only keep the part before it as topic
+                # The part after "save it to" is the save location
+                parts = topic_part.split("save it to", 1)
+                topic = parts[0].strip()
+                save_location = parts[1].strip()
+            elif "save to" in topic_part:
+                parts = topic_part.split("save to", 1)
+                topic = parts[0].strip()
+                save_location = parts[1].strip()
+            else:
+                topic = topic_part.strip()
+            
+            # Clean up topic - remove trailing conjunctions like "and" that might be left over
+            topic = re.sub(r'\s+(?:and|or|then)\s*$', '', topic, flags=re.IGNORECASE).strip()
+            
+            # Resolve save location dynamically
+            save_path = None
+            if save_location:
+                save_location = save_location.strip().rstrip(".?!")
+                save_path = resolve_save_path(save_location)
+            
+            if topic:
+                intent = {"category": "deep_research", "action": "research"}
+                entities['topic'] = topic
+                if save_path:
+                    entities['save_path'] = save_path
+        if not intent:
+            # "open X in left/right window" pattern
+            open_tile_match = re.match(
+                r'^open\s+(.+?)\s+(?:in|on)\s+(?:the\s+)?(left|right)(?:\s+(?:side|half|window))?$',
+                clause, re.IGNORECASE
+            )
+            if open_tile_match:
+                app = open_tile_match.group(1).strip()
+                side = open_tile_match.group(2).lower()
+                action = "tile_left" if side == "left" else "tile_right"
+                intent = {"category": "window", "action": action}
+                entities['app_name'] = app
+            else:
+                # "open X in full screen" pattern
+                open_full_match = re.match(
+                    r'^open\s+(.+?)\s+(?:in|on)\s+(?:the\s+)?(full\s*screen|fullscreen|maximize|maximised|maximized)$',
+                    clause, re.IGNORECASE
+                )
+                if open_full_match:
+                    app = open_full_match.group(1).strip()
+                    intent = {"category": "window", "action": "fullscreen"}
+                    entities['app_name'] = app
 
         # APP LAUNCHER (Fallback for "open X")
         if not intent and "open" in clause:
@@ -1229,9 +1637,12 @@ def parse_intent(text, context=None):
 _bt_paired_devices = None
 _bt_scanned_devices = []
 _bt_last_connected_device = None
+_bt_last_scan_summary = ""  # TTS-safe summary of last scan
+_bt_last_scan_devices = []   # Raw device list from last scan
 
 def handle_bluetooth(intent, entities):
     global _bt_paired_devices, _bt_scanned_devices, _bt_last_connected_device
+    global _bt_last_scan_summary, _bt_last_scan_devices
     action = intent['action']
     if action == "pair":
         action = "connect"
@@ -1252,21 +1663,26 @@ def handle_bluetooth(intent, entities):
         _bt_scanned_devices = asyncio.run(bt_module.scan_nearby_devices(filter_keyword=filter_kw))
         names = [d['name'] for d in _bt_scanned_devices]
         
+        # Store raw device list and create TTS-safe summary
+        _bt_last_scan_devices = _bt_scanned_devices
+        count = len(names)
         if filter_kw:
-            if names:
-                return f"Scanned {filter_kw} Bluetooth devices: {', '.join(names)}. (Do not read these names aloud to the user unless they ask. Just tell them how many {filter_kw} devices you found, and ask if they want to pair one.)"
-            else:
-                return f"No {filter_kw} bluetooth devices found."
+            _bt_last_scan_summary = f"Found {count} {filter_kw} device{'s' if count != 1 else ''} nearby."
         else:
-            if names:
-                return f"Scanned Bluetooth devices: {', '.join(names)}. (Do not read these names aloud to the user unless they ask. Just tell them how many devices you found, and ask if they want to pair one.)"
+            _bt_last_scan_summary = f"Found {count} device{'s' if count != 1 else ''} nearby."
+        
+        if count > 0:
+            return _bt_last_scan_summary + " Want me to list them or pair one?"
+        else:
+            if filter_kw:
+                return f"No {filter_kw} bluetooth devices found."
             else:
                 return "No new bluetooth devices found."
     elif action == "list_scanned":
-        if not _bt_scanned_devices:
-            return "No recently scanned devices found. You may need to run a scan first."
-        names = [d['name'] for d in _bt_scanned_devices]
-        return f"Recently scanned devices: {', '.join(names)}"
+        if not _bt_last_scan_devices:
+            return "No recent scan results. Run a scan first."
+        names = [d['name'] for d in _bt_last_scan_devices]
+        return f"Scan results: {', '.join(names)}"
     elif action == "list_previous":
         if _bt_paired_devices is None:
             _bt_paired_devices = bt_module.get_paired_devices()
@@ -1340,6 +1756,21 @@ def execute_intent(intent, entities):
     elif cat == "file": return handle_file_operations(intent, entities)
     elif cat == "conversion": return handle_conversion(intent, entities)
     elif cat == "bluetooth": return handle_bluetooth(intent, entities)
+    elif cat == "deep_research": 
+        from core.deep_research import run_deep_research_pipeline
+        topic = entities.get('topic', '')
+        save_path = entities.get('save_path')
+        success, result = run_deep_research_pipeline(
+            query=topic,
+            save_path=save_path,
+            context="",
+            history=[],
+            progress_callback=lambda msg: print(f"[Deep Research] {msg}")
+        )
+        if success:
+            return f"Research complete. Saved to {result.get('file_path', 'unknown')}"
+        else:
+            return f"Research failed: {result}"
     return "Unknown category"
 
 # ---------------------------------------------------------------------------
@@ -1412,8 +1843,43 @@ _TRIVIAL_FILE = {
     "select all": "select_all",
 }
 
+_TRIVIAL_WINDOW = {
+    "minimize": ("minimize", "this"),
+    "minimize this": ("minimize", "this"),
+    "minimize window": ("minimize", "this"),
+    "minimize this window": ("minimize", "this"),
+    "minimize all": ("minimize", "all"),
+    "minimize all windows": ("minimize", "all"),
+    "maximize": ("maximize", "this"),
+    "maximize this": ("maximize", "this"),
+    "maximize window": ("maximize", "this"),
+    "maximize this window": ("maximize", "this"),
+    "close window": ("close", "this"),
+    "close this window": ("close", "this"),
+    "close all windows": ("close", "all"),
+    "restore": ("restore", "this"),
+    "restore window": ("restore", "this"),
+    "restore this window": ("restore", "this"),
+    "hide": ("hide", "this"),
+    "hide this": ("hide", "this"),
+    "hide this window": ("hide", "this"),
+}
+
+_WINDOW_APP_RE = re.compile(
+    r'^(minimize|maximize|close|restore|hide)\s+(.+?)(?:\s+window)?$', re.IGNORECASE
+)
+
 _VOL_SET_RE = re.compile(r'^(?:set\s+)?volume\s+(?:to\s+)?(\d+)(?:\s*%)?$')
 _BR_SET_RE = re.compile(r'^(?:set\s+)?brightness\s+(?:to\s+)?(\d+)(?:\s*%)?$')
+
+# App launch patterns - uses dynamic get_installed_apps()
+_APP_LAUNCH_RE = re.compile(r'^(?:open|launch|start)\s+(.+)$', re.IGNORECASE)
+
+# Web search patterns  
+_WEB_SEARCH_RE = re.compile(r'^(?:search|google|look up)\s+(?:for\s+)?(.+)$', re.IGNORECASE)
+
+# Weather patterns
+_WEATHER_RE = re.compile(r'^(?:weather|temperature|forecast)(?:\s+(?:in|at|for)\s+(.+))?$', re.IGNORECASE)
 
 
 def try_trivial_fast_lane(text):
@@ -1435,10 +1901,22 @@ def try_trivial_fast_lane(text):
     if not clean:
         return False, None
 
+    # Bail out on compound commands — let process_fast_lane / intent classification handle them
+    if " and " in clean:
+        second_clause = clean.split(" and ", 1)[1]
+        _COMPOUND_ACTION_KEYWORDS = (
+            "open", "launch", "start", "transfer", "move", "put", "place",
+            "tile", "close", "minimize", "maximize", "search", "play",
+        )
+        if any(kw in second_clause for kw in _COMPOUND_ACTION_KEYWORDS):
+            return False, None
+
     # Media controls (exact matches)
     if clean in _TRIVIAL_MEDIA:
-        action, extra_entities = _TRIVIAL_MEDIA[clean]
-        return True, handle_spotify_control({"category": "spotify", "action": action}, extra_entities)
+        from config.config import GROQ_API_KEY
+        if not GROQ_API_KEY:  # <-- ONLY use fast lane if Groq is disabled
+            action, extra_entities = _TRIVIAL_MEDIA[clean]
+            return True, handle_spotify_control({"category": "spotify", "action": action}, extra_entities)
 
     # System controls (exact matches)
     if clean in _TRIVIAL_SYSTEM:
@@ -1461,9 +1939,149 @@ def try_trivial_fast_lane(text):
             {"category": "system", "action": "set", "target": "brightness"}, {"value": val}
         )
 
+    # "open X in left/right window" pattern - MUST come before app launch to catch these
+    open_tile_match = re.match(
+        r'^open\s+(.+?)\s+(?:in|on)\s+(?:the\s+)?(left|right)(?:\s+(?:side|half|window))?$',
+        clean, re.IGNORECASE
+    )
+    if open_tile_match:
+        app = open_tile_match.group(1).strip()
+        side = open_tile_match.group(2).lower()
+        action = "tile_left" if side == "left" else "tile_right"
+        return True, handle_window_control(
+            {"category": "window", "action": action}, {"app_name": app}
+        )
+
+    # "open X in full screen" pattern
+    open_full_match = re.match(
+        r'^open\s+(.+?)\s+(?:in|on)\s+(?:the\s+)?(full\s*screen|fullscreen|maximize|maximised|maximized)$',
+        clean, re.IGNORECASE
+    )
+    if open_full_match:
+        app = open_full_match.group(1).strip()
+        return True, handle_window_control(
+            {"category": "window", "action": "fullscreen"}, {"app_name": app}
+        )
+
+    # "transfer/move X to left/right" pattern - for existing windows
+    transfer_match = re.match(
+        r'^(?:transfer|move|put|place|shift)\s+(.+?)\s+(?:to|on)\s+(?:the\s+)?(left|right)(?:\s+(?:side|half|window))?$',
+        clean, re.IGNORECASE
+    )
+    if transfer_match:
+        app = transfer_match.group(1).strip()
+        side = transfer_match.group(2).lower()
+        action = "tile_left" if side == "left" else "tile_right"
+        return True, handle_window_control(
+            {"category": "window", "action": action}, {"app_name": app}
+        )
+
+    # App launch (dynamic - uses fuzzy matching against installed apps)
+    app_match = _APP_LAUNCH_RE.match(clean)
+    if app_match:
+        app_name = app_match.group(1).strip()
+        return True, handle_app_launcher({"category": "app", "action": "launch"}, {"app_name": app_name})
+
+    # Web search (dynamic)
+    web_match = _WEB_SEARCH_RE.match(clean)
+    if web_match:
+        query = web_match.group(1).strip()
+        if query:
+            return True, handle_browser_control({"category": "browser", "action": "search"}, {"query": query})
+
+    # Weather (dynamic)
+    weather_match = _WEATHER_RE.match(clean)
+    if weather_match:
+        city = weather_match.group(1).strip() if weather_match.group(1) else None
+        from tools.web_tools import get_weather
+        return True, get_weather(city)
+
     # File operations (exact matches)
     if clean in _TRIVIAL_FILE:
         action = _TRIVIAL_FILE[clean]
         return True, handle_file_operations({"category": "file", "action": action}, {})
+
+    # Window controls (exact matches)
+    if clean in _TRIVIAL_WINDOW:
+        action, target = _TRIVIAL_WINDOW[clean]
+        return True, handle_window_control(
+            {"category": "window", "action": action}, {"window_name": target}
+        )
+
+    # Window control with app name (e.g., "minimize spotify", "close chrome")
+    win_match = _WINDOW_APP_RE.match(clean)
+    if win_match:
+        action = win_match.group(1).lower()
+        target = win_match.group(2).strip()
+        # Don't match generic words that could be conversation
+        if target not in ["it", "that", "the", "my", "a"]:
+            return True, handle_window_control(
+                {"category": "window", "action": action}, {"window_name": target}
+            )
+
+    # Tiling commands (e.g., "tile chrome left", "snap spotify right")
+    tile_match = re.match(
+        r'^(?:tile|snap|put|move|place)\s+(.+?)\s+(?:to\s+)?(?:the\s+)?(left|right)(?:\s+(?:side|half|window))?$',
+        clean, re.IGNORECASE
+    )
+    if tile_match:
+        app = tile_match.group(1).strip()
+        side = tile_match.group(2).lower()
+        action = "tile_left" if side == "left" else "tile_right"
+        return True, handle_window_control(
+            {"category": "window", "action": action}, {"app_name": app}
+        )
+
+    # "open X in left/right window" pattern
+    open_tile_match = re.match(
+        r'^open\s+(.+?)\s+(?:in|on)\s+(?:the\s+)?(left|right)(?:\s+(?:side|half|window))?$',
+        clean, re.IGNORECASE
+    )
+    if open_tile_match:
+        app = open_tile_match.group(1).strip()
+        side = open_tile_match.group(2).lower()
+        action = "tile_left" if side == "left" else "tile_right"
+        return True, handle_window_control(
+            {"category": "window", "action": action}, {"app_name": app}
+        )
+
+    # "open X in full screen" pattern
+    open_full_match = re.match(
+        r'^open\s+(.+?)\s+(?:in|on)\s+(?:the\s+)?(full\s*screen|fullscreen|maximize|maximised|maximized)$',
+        clean, re.IGNORECASE
+    )
+    if open_full_match:
+        app = open_full_match.group(1).strip()
+        return True, handle_window_control(
+            {"category": "window", "action": "tile_right"}, {"app_name": app}
+        )
+
+    # "transfer/move X to left/right" pattern - for existing windows
+    transfer_match = re.match(
+        r'^(?:transfer|move|put|place|shift)\s+(.+?)\s+(?:to|on)\s+(?:the\s+)?(left|right)(?:\s+(?:side|half|window))?$',
+        clean, re.IGNORECASE
+    )
+    if transfer_match:
+        app = transfer_match.group(1).strip()
+        side = transfer_match.group(2).lower()
+        action = "tile_left" if side == "left" else "tile_right"
+        return True, handle_window_control(
+            {"category": "window", "action": action}, {"app_name": app}
+        )
+
+    # "minimize/maximize/close/restore X" pattern for specific apps
+    window_action_match = re.match(
+        r'^(minimize|maximize|maximise|close|restore|hide)\s+(.+?)(?:\s+window)?$',
+        clean, re.IGNORECASE
+    )
+    if window_action_match:
+        action = window_action_match.group(1).lower()
+        target = window_action_match.group(2).strip()
+        # Normalize maximize spelling
+        if action in ("maximise", "maximized"):
+            action = "maximize"
+        return True, handle_window_control(
+            {"category": "window", "action": action}, {"window_name": target}
+        )
 
     return False, None

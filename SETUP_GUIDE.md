@@ -125,10 +125,10 @@ mkdir -p tools/piper models/piper data logs core/tts_output memory/store
 ### Ollama Model
 
 ```bash
-ollama pull gemma4:12b
+ollama pull gemma4:12b-nvfp4
 ```
 
-Or whichever model is set in `config/config.py` (default: `gemma4:12b`).
+Or whichever model is set in `config/config.py` (default: `gemma4:12b-nvfp4`).
 
 ### Piper TTS Binary
 
@@ -345,7 +345,7 @@ JARVIS is designed as a **fully offline, local-first AI assistant**. The core de
 ### What runs locally (no internet)
 
 - **Speech-to-Text:** Faster-Whisper (CTranslate2) — runs entirely on CPU
-- **Language Model:** Ollama + Gemma4:12b — runs on Metal GPU via Ollama
+- **Language Model:** Ollama + Gemma4:12b-nvfp4 — runs on Metal GPU via Ollama
 - **Text-to-Speech:** Piper TTS — runs locally via ONNX runtime
 - **Memory System:** ChromaDB + sentence-transformers — all stored in `memory/store/`
 - **System Control:** Volume, brightness, window management — all via local `osascript`

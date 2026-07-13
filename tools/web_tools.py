@@ -7,6 +7,10 @@
 
 import requests
 import warnings
+from tools.session_manager import (
+    get_serper_session, get_weather_session, get_currency_session, get_general_session,
+    close_all_sessions
+)
 
 # Suppress noisy warnings from libraries
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -15,8 +19,14 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 # ==========================================================
 # SERPER.DEV — Primary search engine (Google results)
 # ==========================================================
-def search_serper(query, api_key, max_results=2):
+def search_serper(query, api_key, max_results=2, recency_days=None):
     """Search the web using Serper.dev (Google Search API).
+
+    Args:
+        query: Search query string
+        api_key: Serper.dev API key
+        max_results: Number of results to return
+        recency_days: If set, filter results to this many days (e.g., 365 for past year)
 
     Returns a summary string, or None if the API call fails.
     """
@@ -24,13 +34,20 @@ def search_serper(query, api_key, max_results=2):
         return None
 
     try:
-        resp = requests.post(
+        session = get_serper_session()
+        
+        # Build payload with optional recency filter
+        payload = {"q": query, "num": max_results}
+        if recency_days:
+            payload["recencyDays"] = recency_days
+        
+        resp = session.post(
             "https://google.serper.dev/search",
             headers={
                 "X-API-KEY": api_key,
                 "Content-Type": "application/json",
             },
-            json={"q": query, "num": max_results},
+            json=payload,
             timeout=10,
         )
         resp.raise_for_status()
@@ -125,7 +142,8 @@ def _search_ddg(query, max_results=2):
 def _search_fallback(query):
     """Fallback search using DuckDuckGo Instant Answer API."""
     try:
-        resp = requests.get(
+        session = get_general_session()
+        resp = session.get(
             "https://api.duckduckgo.com/",
             params={"q": query, "format": "json", "no_html": 1},
             timeout=10,
@@ -152,7 +170,8 @@ def _search_fallback(query):
 def _search_wikipedia(query):
     """Direct Wikipedia search as final fallback."""
     try:
-        resp = requests.get(
+        session = get_general_session()
+        resp = session.get(
             "https://en.wikipedia.org/api/rest_v1/page/summary/" + query.replace(" ", "_"),
             timeout=5,
             headers={"User-Agent": "JARVIS/1.0"},
@@ -170,17 +189,18 @@ def _search_wikipedia(query):
 # ==========================================================
 # UNIFIED SEARCH — Serper first, then fallback chain
 # ==========================================================
-def search_web(query, api_key="", max_results=1):
+def search_web(query, api_key="", max_results=1, recency_days=None):
     """Search the web. Uses Serper.dev first, falls back to DuckDuckGo.
 
     Args:
         query: The search query.
         api_key: Serper.dev API key. If empty, skips Serper.
         max_results: Number of results to fetch.
+        recency_days: If set, filter results to this many days (Serper only).
     """
     # 1. Try Serper.dev (best quality — Google results)
     if api_key:
-        result = search_serper(query, api_key, max_results)
+        result = search_serper(query, api_key, max_results, recency_days)
         if result:
             return result
         print("[Serper] No results, falling back to DuckDuckGo...")
@@ -209,10 +229,9 @@ def search_web(query, api_key="", max_results=1):
 def get_weather(city=None):
     """Get current weather from wttr.in. Auto-detects location if no city given."""
     try:
+        session = get_weather_session()
         url = f"https://wttr.in/{city}?format=j1" if city else "https://wttr.in/?format=j1"
-        resp = requests.get(
-            url, timeout=5, headers={"User-Agent": "JARVIS/1.0"}
-        )
+        resp = session.get(url, timeout=5)
         data = resp.json()
 
         current = data["current_condition"][0]
@@ -321,7 +340,8 @@ def get_currency_rate(from_code, to_code, amount=1.0):
     Uses https://open.er-api.com (no API key needed, updates daily).
     """
     try:
-        resp = requests.get(
+        session = get_currency_session()
+        resp = session.get(
             f"https://open.er-api.com/v6/latest/{from_code}",
             timeout=10,
         )
@@ -373,7 +393,17 @@ _CACHE_TTL = _td(hours=1)
 _WEATHER_CACHE_TTL = _td(minutes=30)
 
 
-def perform_search(query, weather_city=None, serper_api_key=""):
+def _cache_put(key, result):
+    """Store a result in the search cache, evicting old entries if full."""
+    if len(_search_cache) >= _MAX_CACHE_SIZE:
+        # Evict oldest half
+        sorted_keys = sorted(_search_cache.keys(), key=lambda k: _search_cache[k][1])
+        for k in sorted_keys[:_MAX_CACHE_SIZE // 2]:
+            del _search_cache[k]
+    _search_cache[key] = (result, _dt.now())
+
+
+def perform_search(query, weather_city=None, serper_api_key="", recency_days=None):
     """Route a query to the best data source and return results.
 
     Priority: Cache → Weather API → Currency API → Serper.dev → DuckDuckGo → Wikipedia
@@ -393,11 +423,7 @@ def perform_search(query, weather_city=None, serper_api_key=""):
     # Weather detection
     if any(kw in lower for kw in _WEATHER_KEYWORDS):
         result = get_weather(weather_city or None)
-        if len(_search_cache) >= _MAX_CACHE_SIZE:
-            sorted_keys = sorted(_search_cache.keys(), key=lambda k: _search_cache[k][1])
-            for k in sorted_keys[:_MAX_CACHE_SIZE // 2]:
-                del _search_cache[k]
-        _search_cache[cache_key] = (result, _dt.now())
+        _cache_put(cache_key, result)
         return result
 
     # Currency conversion — use dedicated API for accuracy
@@ -407,21 +433,13 @@ def perform_search(query, weather_city=None, serper_api_key=""):
             from_code, to_code, amount = detected
             result = get_currency_rate(from_code, to_code, amount)
             if "failed" not in result.lower() and "error" not in result.lower():
-                if len(_search_cache) >= _MAX_CACHE_SIZE:
-                    sorted_keys = sorted(_search_cache.keys(), key=lambda k: _search_cache[k][1])
-                    for k in sorted_keys[:_MAX_CACHE_SIZE // 2]:
-                        del _search_cache[k]
-                _search_cache[cache_key] = (result, _dt.now())
+                _cache_put(cache_key, result)
                 return result
         # Fall through to web search if detection/API fails
 
     # General web search (Serper → DuckDuckGo → Wikipedia)
-    result = search_web(query, api_key=serper_api_key, max_results=3)
-    if len(_search_cache) >= _MAX_CACHE_SIZE:
-        sorted_keys = sorted(_search_cache.keys(), key=lambda k: _search_cache[k][1])
-        for k in sorted_keys[:_MAX_CACHE_SIZE // 2]:
-            del _search_cache[k]
-    _search_cache[cache_key] = (result, _dt.now())
+    result = search_web(query, api_key=serper_api_key, max_results=3, recency_days=recency_days)
+    _cache_put(cache_key, result)
     return result
 
 

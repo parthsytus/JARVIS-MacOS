@@ -29,14 +29,28 @@ os.environ["FFMPEG_BINARY"] = FFMPEG_EXE
 # ------------------------------------------------------------
 # WHISPER SETTINGS
 # ------------------------------------------------------------
-WHISPER_MODEL = "large-v3-turbo"      # Natively supported by faster-whisper, 800MB VRAM Hindi/Hinglish
+WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo"  # MLX-optimized, multilingual, Hindi/Hinglish
 WHISPER_LANGUAGE = None        # None = Auto-detect language
+WHISPER_INITIAL_PROMPT = "Hinglish conversation. Song names: Tera Ban Jaunga, Tum Hi Ho, Kesariya, Dil Chahta Hai. Contacts: Aman, Priya, Rahul."
 MODELS_DIR = os.path.join(JARVIS_ROOT, "models")  # Where model weights save
 
 # ------------------------------------------------------------
 # OLLAMA SETTINGS
 # ------------------------------------------------------------
-OLLAMA_MODEL = "gemma4:12b"     # Change this one line to swap the brain
+# Fast model (cold-start on fallback) - Qwen3.5 4B with thinking & native tool calling
+FAST_MODEL = "qwen3.5:4b"
+FAST_NUM_CTX = 4096
+FAST_NUM_PREDICT = 1024
+FAST_KEEP_ALIVE = 0  # unload after use (offline fallback only)
+
+# Complex model (on-demand) - gemma4:12b for deep research/complex reasoning
+COMPLEX_MODEL = "gemma4:12b-nvfp4"
+COMPLEX_NUM_CTX = 8192
+COMPLEX_NUM_PREDICT = 6144
+COMPLEX_KEEP_ALIVE = 0  # unload immediately after task
+
+# Default model for backward compatibility
+OLLAMA_MODEL = FAST_MODEL
 OLLAMA_URL = "http://localhost:11434/api/chat"
 
 # ------------------------------------------------------------
@@ -84,6 +98,13 @@ MEMORY_TOP_K = 2                # How many memories to retrieve per query
 MEMORY_CONTEXT_BUDGET = 1500    # Max tokens for memory block in LLM context
 MEMORY_DECAY_TAU = 30           # Forgetting curve time constant (days)
 MEMORY_MID_SESSION_INTERVAL = 20  # Consolidate every N turns during long sessions
+
+# ----------------------------------------------------------
+# GROQ CLOUD SETTINGS (Primary Brain)
+# ----------------------------------------------------------
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = "llama-3.1-8b-instant"
+GROQ_TIMEOUT_S = 3  # Connect timeout for fast offline detection
 
 # ----------------------------------------------------------
 # WAKE WORDS

@@ -1,6 +1,6 @@
 # ==========================================================
 # JARVIS — Vector Store (RAG Foundation)
-# ChromaDB + sentence-transformers for semantic memory search.
+# ChromaDB + MLX/sentence-transformers for semantic memory search.
 # Embeds conversations, retrieves by similarity at query time.
 # ==========================================================
 
@@ -10,32 +10,36 @@ import time
 import numpy as np
 
 import chromadb
-from sentence_transformers import SentenceTransformer
-import torch
+from memory.mlx_embedder import create_embedder
+
+
+def is_connected():
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(1.5)  # Per-socket timeout — don't use setdefaulttimeout (affects all sockets)
+        s.connect(("8.8.8.8", 53))
+        s.close()
+        return True
+    except Exception:
+        return False
 
 
 class VectorStore:
     """ChromaDB-backed vector store for JARVIS long-term memory retrieval."""
 
-    def __init__(self, persist_dir, model_name="all-MiniLM-L6-v2", model_cache_dir=None):
+    def __init__(self, persist_dir, model_name="bge-small-en-v1.5", model_cache_dir=None):
         """
         Args:
             persist_dir: Path to ChromaDB persistent storage (e.g. memory/store/chroma_db/)
-            model_name: Sentence-transformers model name (default: all-MiniLM-L6-v2, 22MB)
+            model_name: Embedding model name (default: bge-small-en-v1.5, uses MLX if available)
             model_cache_dir: Where to download/cache the model
         """
         os.makedirs(persist_dir, exist_ok=True)
 
-        # Auto-detect best device: MPS on Apple Silicon, CPU otherwise
-        _st_device = "mps" if torch.backends.mps.is_available() else "cpu"
-
         print("[Memory] Loading embedding model...")
-        self.embedder = SentenceTransformer(
-            model_name,
-            device=_st_device,
-            cache_folder=model_cache_dir,
-        )
-        print(f"[Memory] Embedding model '{model_name}' loaded on {_st_device.upper()}.")
+        self.embedder = create_embedder(model_name, model_cache_dir)
+        print(f"[Memory] Embedding model ready.")
 
         self.client = chromadb.PersistentClient(path=persist_dir)
         self.collection = self.client.get_or_create_collection(
@@ -78,9 +82,20 @@ class VectorStore:
         if "timestamp" not in safe_metadata:
             safe_metadata["timestamp"] = time.time()
 
+        # Embedder returns (n, dim) array; for single text it's (1, dim)
+        # ChromaDB expects list of embeddings, each a list of floats
+        embedding = self.embedder.encode(text)
+        emb_list = embedding.tolist()
+        if isinstance(emb_list[0], list):
+            # Already 2D: [[...], [...], ...]
+            embeddings = emb_list
+        else:
+            # 1D: [...] -> wrap in list
+            embeddings = [emb_list]
+
         self.collection.add(
             ids=[memory_id],
-            embeddings=[embedding],
+            embeddings=embeddings,
             documents=[text],
             metadatas=[safe_metadata],
         )
@@ -135,9 +150,16 @@ class VectorStore:
         # Don't request more results than we have
         actual_k = min(top_k, self.count())
 
-        query_embedding = self.embedder.encode(query).tolist()
+        query_embedding = self.embedder.encode(query)
+        query_emb_list = query_embedding.tolist()
+        if isinstance(query_emb_list[0], list):
+            # Already 2D: [[...], [...], ...]
+            query_embeddings = query_emb_list
+        else:
+            # 1D: [...] -> wrap in list
+            query_embeddings = [query_emb_list]
         results = self.collection.query(
-            query_embeddings=[query_embedding],
+            query_embeddings=query_embeddings,
             n_results=actual_k,
         )
 
@@ -172,13 +194,20 @@ class VectorStore:
         actual_top_k = min(top_k, actual_candidate_k)
 
         if query_embedding is None:
-            query_embedding = np.array(self.embedder.encode(query))
+            query_embedding = self.embedder.encode(query)
         elif not isinstance(query_embedding, np.ndarray):
             query_embedding = np.array(query_embedding)
+        
+        # Ensure proper format for ChromaDB
+        query_emb_list = query_embedding.tolist()
+        if isinstance(query_emb_list[0], list):
+            query_embeddings = query_emb_list
+        else:
+            query_embeddings = [query_emb_list]
 
         # Fetch more candidates than needed
         results = self.collection.query(
-            query_embeddings=[query_embedding.tolist()],
+            query_embeddings=query_embeddings,
             n_results=actual_candidate_k,
             include=["documents", "metadatas", "distances", "embeddings"],
         )
