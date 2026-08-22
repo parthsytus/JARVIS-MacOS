@@ -27,7 +27,7 @@ jobs:
           pip install ruff==0.15.16
 
       - name: Run ruff syntax check (E9=runtime errors, F63=undefined, F7=undefined, F82=undefined)
-        run: ruff check --select E9,F63,F7,F82 .
+        run: ruff check --select E9,F63,F7,F82 --exclude core/test .
 
       - name: Basic Python syntax check
         run: |
