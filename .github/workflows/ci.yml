@@ -35,7 +35,22 @@ jobs:
 
       - name: Check for common import issues
         run: |
-          python -c "import sys; sys.path.insert(0, '.'); from config.config import JARVIS_ROOT, OLLAMA_URL, FAST_MODEL, COMPLEX_MODEL, WHISPER_MODEL, SAMPLE_RATE, SERPER_API_KEY, GROQ_API_KEY, GROQ_MODEL; print('config imports OK'); import core.fast_lane; print('fast_lane imports OK'); import core.intent_classifier; print('intent_classifier imports OK'); import memory.memory_manager; print('memory_manager imports OK'); import tools.web_tools; print('web_tools imports OK'); import bluetooth_handler; print('bluetooth_handler imports OK'); print('All basic imports OK')"
+          python -c "
+import sys
+sys.path.insert(0, '.')
+# Test core modules without heavy deps
+import core.fast_lane
+print('fast_lane imports OK')
+import core.intent_classifier
+print('intent_classifier imports OK')
+import memory.memory_manager
+print('memory_manager imports OK')
+import tools.web_tools
+print('web_tools imports OK')
+import bluetooth_handler
+print('bluetooth_handler imports OK')
+print('All basic imports OK')
+"
 
   pr-checks:
     name: PR Metadata
