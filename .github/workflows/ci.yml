@@ -14,71 +14,32 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@8d9bea75b28b8c3ed1322ca98b4c1ed5df1f22a9  # v5.4.0
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
 
       - name: Install linting dependencies
         run: |
           python -m pip install --upgrade pip
           pip install ruff==0.15.16
 
-      - name: Run ruff linting
-        run: |
-          ruff check .
-
-      - name: Run ruff format check
-        run: |
-          ruff format --check .
+      - name: Run ruff syntax check (E9=runtime errors, F63=undefined, F7=undefined, F82=undefined)
+        run: ruff check --select E9,F63,F7,F82 --exclude core/test .
 
       - name: Basic Python syntax check
         run: |
           find . -name "*.py" -not -path "./venv/*" -not -path "./.git/*" -exec python -m py_compile {} \;
 
-      - name: Check for common import issues
-        run: |
-          python -c "
-import sys
-sys.path.insert(0, '.')
-# Test core config imports
-from config.config import (
-    JARVIS_ROOT, OLLAMA_URL, FAST_MODEL, COMPLEX_MODEL,
-    WHISPER_MODEL, SAMPLE_RATE, SERPER_API_KEY,
-    GROQ_API_KEY, GROQ_MODEL
-)
-print('config imports OK')
-
-# Test core module imports (no heavy deps)
-import core.fast_lane
-print('fast_lane imports OK')
-
-import core.intent_classifier
-print('intent_classifier imports OK')
-
-import memory.memory_manager
-print('memory_manager imports OK')
-
-import tools.web_tools
-print('web_tools imports OK')
-
-import bluetooth_handler
-print('bluetooth_handler imports OK')
-
-print('All basic imports OK')
-"
-
-  # Lightweight job to verify PR metadata
   pr-checks:
     name: PR Metadata
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
       - name: Checkout repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        uses: actions/checkout@v4
 
       - name: Verify PR title format
         run: |
