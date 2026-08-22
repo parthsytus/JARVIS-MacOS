@@ -144,7 +144,7 @@ def image_to_base64(image_bytes: bytes) -> str:
 # ── Vision Analysis ────────────────────────────────────────────
 VISION_SYSTEM_PROMPT = """You are JARVIS's vision system. Analyze the provided screenshot and identify ALL interactive UI elements.
 
-Return a JSON array of objects, each with:
+Return a JSON object with a single key "elements", whose value is a flat array of objects. Each object must have:
 - "element_type": "button" | "input" | "link" | "menu" | "icon" | "text" | "checkbox" | "dropdown" | "slider" | "tab" | "unknown"
 - "description": Brief human-readable label (e.g., "Submit button", "Search field", "Close icon")
 - "x": Center X coordinate in pixels (0 = left edge)
@@ -160,13 +160,16 @@ Rules:
 3. Coordinates are in the ORIGINAL screenshot coordinate space
 4. Be precise — center point must land on the clickable area
 5. If unsure, set confidence lower and note in description
-6. Return empty array [] if no interactive elements found
+6. The "elements" array must be flat — never nest arrays inside it, never group elements by category
+7. Return {"elements": []} if no interactive elements found
 
 Example output:
-[
-  {"element_type": "button", "description": "Blue Submit button at bottom right", "x": 950, "y": 520, "width": 120, "height": 40, "confidence": 0.95, "action_hint": "click"},
-  {"element_type": "input", "description": "Search field top center", "x": 480, "y": 80, "width": 400, "height": 36, "confidence": 0.9, "action_hint": "type"}
-]"""
+{
+  "elements": [
+    {"element_type": "button", "description": "Blue Submit button at bottom right", "x": 950, "y": 520, "width": 120, "height": 40, "confidence": 0.95, "action_hint": "click"},
+    {"element_type": "input", "description": "Search field top center", "x": 480, "y": 80, "width": 400, "height": 36, "confidence": 0.9, "action_hint": "type"}
+  ]
+}"""
 
 
 def analyze_screen(user_query: str = "", context: str = "") -> ScreenAnalysis:
@@ -201,7 +204,7 @@ def analyze_screen(user_query: str = "", context: str = "") -> ScreenAnalysis:
 User's intent: {user_query or "General navigation"}
 Context: {context or "None"}
 
-Return JSON array of interactive elements only."""
+Return a JSON object with an "elements" array containing the interactive elements — do not nest arrays inside it."""
     
     # 4. Call Groq Vision API
     client = _get_groq_client()
@@ -236,7 +239,7 @@ Return JSON array of interactive elements only."""
     
     # 5. Parse JSON response
     try:
-        # Groq may return object with "elements" key or direct array
+        # Groq should return object with "elements" key (or direct array for backwards compat)
         parsed = json.loads(raw_content)
         if isinstance(parsed, dict) and "elements" in parsed:
             elements_data = parsed["elements"]
@@ -252,24 +255,30 @@ Return JSON array of interactive elements only."""
     # 6. Convert to UIElement objects
     elements = []
     for item in elements_data:
-        try:
-            elem = UIElement(
-                element_type=item.get("element_type", "unknown"),
-                description=item.get("description", ""),
-                x=int(item.get("x", 0)),
-                y=int(item.get("y", 0)),
-                width=int(item.get("width", 0)),
-                height=int(item.get("height", 0)),
-                confidence=float(item.get("confidence", 0.0)),
-                action_hint=item.get("action_hint", "click")
-            )
-            # Validate coordinates are within screen bounds
-            if 0 <= elem.x <= original_width and 0 <= elem.y <= original_height:
-                elements.append(elem)
-            else:
-                logger.warning(f"Element {elem.description} has out-of-bounds coordinates ({elem.x}, {elem.y})")
-        except (ValueError, TypeError) as e:
-            logger.warning(f"Skipping malformed element: {item} — {e}")
+        # Defensive: if the model nested a sub-array instead of a flat dict,
+        # flatten one level rather than crashing the whole analysis.
+        sub_items = item if isinstance(item, list) else [item]
+        for sub_item in sub_items:
+            if not isinstance(sub_item, dict):
+                logger.warning(f"Skipping malformed element (expected dict, got {type(sub_item).__name__}): {sub_item}")
+                continue
+            try:
+                elem = UIElement(
+                    element_type=sub_item.get("element_type", "unknown"),
+                    description=sub_item.get("description", ""),
+                    x=int(sub_item.get("x", 0)),
+                    y=int(sub_item.get("y", 0)),
+                    width=int(sub_item.get("width", 0)),
+                    height=int(sub_item.get("height", 0)),
+                    confidence=float(sub_item.get("confidence", 0.0)),
+                    action_hint=sub_item.get("action_hint", "click")
+                )
+                if 0 <= elem.x <= original_width and 0 <= elem.y <= original_height:
+                    elements.append(elem)
+                else:
+                    logger.warning(f"Element {elem.description} has out-of-bounds coordinates ({elem.x}, {elem.y})")
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Skipping malformed element: {sub_item} — {e}")
     
     logger.info(f"Detected {len(elements)} interactive elements")
     
