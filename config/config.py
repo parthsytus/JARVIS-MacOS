@@ -31,7 +31,15 @@ os.environ["FFMPEG_BINARY"] = FFMPEG_EXE
 # ------------------------------------------------------------
 WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo"  # MLX-optimized, multilingual, Hindi/Hinglish
 WHISPER_LANGUAGE = None        # None = Auto-detect language
-WHISPER_INITIAL_PROMPT = "Hinglish conversation. Song names: Tera Ban Jaunga, Tum Hi Ho, Kesariya, Dil Chahta Hai. Contacts: Aman, Priya, Rahul."
+WHISPER_INITIAL_PROMPT = (
+    "JARVIS voice assistant. Commands: open Safari, open Firefox, open Chrome, "
+    "open Spotify, open WhatsApp, open Telegram, open Discord, open Slack, "
+    "open Terminal, open Finder, open Notes, open Calendar, open Messages, "
+    "play music, pause, next, previous, volume up, volume down, mute, unmute, "
+    "brightness, Bluetooth, web search, deep research, open maps. "
+    "Hinglish conversation. Song names: Tera Ban Jaunga, Tum Hi Ho, Kesariya, "
+    "Dil Chahta Hai. Contacts: Aman, Priya, Rahul."
+)
 MODELS_DIR = os.path.join(JARVIS_ROOT, "models")  # Where model weights save
 
 # ------------------------------------------------------------
@@ -103,8 +111,8 @@ MEMORY_MID_SESSION_INTERVAL = 20  # Consolidate every N turns during long sessio
 # GROQ CLOUD SETTINGS (Primary Brain)
 # ----------------------------------------------------------
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = "llama-3.1-8b-instant"
-GROQ_TIMEOUT_S = 3  # Connect timeout for fast offline detection
+GROQ_MODEL = "openai/gpt-oss-20b"
+GROQ_TIMEOUT_S = 8  # Connect timeout for fast offline detection
 
 # ----------------------------------------------------------
 # WAKE WORDS

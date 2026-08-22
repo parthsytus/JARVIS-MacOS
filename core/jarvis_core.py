@@ -1121,7 +1121,8 @@ class BackgroundTranscriber:
         
         # Single transcription pass on the complete, trimmed audio
         # STTEngine.transcribe signature: (audio, sample_rate=16000, initial_prompt=None, beam_width=None)
-        text, lang = self.model.transcribe(frames_to_process)
+        from config.config import WHISPER_INITIAL_PROMPT
+        text, lang = self.model.transcribe(frames_to_process, initial_prompt=WHISPER_INITIAL_PROMPT)
         
         # Clear the real-time transcript line
         sys.stdout.write("\r\033[K")
