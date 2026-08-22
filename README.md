@@ -1,4 +1,4 @@
-# JARVIS-MacOS 🤖🍏
+# JARVIS-MacOS 🧠⚡
 
 **A fully offline, voice-activated AI assistant built natively for Apple Silicon.**
 
